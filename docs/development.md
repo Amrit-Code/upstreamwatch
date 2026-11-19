@@ -58,7 +58,7 @@ Skills are in `.claude/skills/<name>/SKILL.md`. Each tells an agent how to do a 
 
 ## make check
 
-One command, `make check`, runs six steps in order: gofmt, `go vet`, build, `go test -race`, the layering lint and the standard-library import check. It is the same command for agents, for the lead session and for CI. A task is not done until it passes.
+One command, `make check`, runs six steps in order: gofmt, `go vet`, build, `go test -race`, the layering lint and the standard-library import check. The gofmt step skips `.claude/`, where agent worktrees live. It is the same command for agents, for the lead session and for CI. A task is not done until it passes.
 
 - The layering lint is `go-arch-lint`, run with `go run <module>@<version>` (v1.19.2) so it never enters `go.mod`; its rules are in `.go-arch-lint.yml`. Its deep scan is off (`deepScan: false`), because the scan treats `cmd/upw` passing `*store.DB` into a constructor that takes a consumer-declared interface as the store depending on that consumer, which is how the services are wired. The import rules are still checked in full.
 - The import check is `scripts/check-imports.sh`. It uses `go list` to fail when `database/sql` is imported outside `internal/store`, or `os/exec` outside `internal/gitsrc` and `internal/testutil`. It looks at non-test imports only.

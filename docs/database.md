@@ -1,8 +1,8 @@
 # Database
 
-This document shows the SQLite schema: three entity-relationship diagrams, every table with its columns, and which tables can be rebuilt from outside sources. The schema comes from section 4 of [the plan](../mvp-plan/PLAN.md) plus four accepted additions: `llm_verdicts.request_payload`, `llm_verdicts.evidence_verified`, the `digests` table (with its `error` column) and the `settings` table. Which interface reads and writes each table is in [data-access.md](data-access.md).
+This document shows the SQLite schema: three entity-relationship diagrams, every table with its columns, and which tables can be rebuilt from outside sources. The schema comes from section 4 of [the plan](../mvp-plan/PLAN.md) plus five accepted additions: `llm_verdicts.request_payload`, `llm_verdicts.evidence_verified`, the `digests` table (with its `error` column), the `settings` table and the `osv_queries` table. Which interface reads and writes each table is in [data-access.md](data-access.md).
 
-The initial schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md). `0002_timeline.sql` then adds `dep_versions.requirement`, recreates the `dep_state` view to carry it, and adds two indexes: `dep_versions_identity` and `commits_repo_position`. `0003_timeline_settings.sql` adds `repos.timeline_settings`.
+The initial schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md). `0002_timeline.sql` then adds `dep_versions.requirement`, recreates the `dep_state` view to carry it, and adds two indexes: `dep_versions_identity` and `commits_repo_position`. `0003_timeline_settings.sql` adds `repos.timeline_settings`. `0004_vulns.sql` adds the `osv_queries` table and the index `digests_channel_status` on `digests (channel, status)`.
 
 Conventions: names are snake_case, primary keys are integers unless noted, and timestamp columns end in `_ts` and hold ISO-8601 UTC text (RFC 3339, second precision, `Z` suffix). Every table has `created_ts` and `updated_ts`, set by the store, except `kv`, `http_cache` and `settings`, which have only `updated_ts`, and `schema_migrations`, which has neither. The two timestamps are left out of the listings below. The ER diagrams show only keys and the columns that carry meaning.
 
@@ -160,11 +160,16 @@ erDiagram
     text author
     text body
   }
+  osv_queries {
+    text purl PK "no version"
+    text version PK
+    text queried_ts
+  }
   packages { int id PK }
   dep_versions { int id PK }
 ```
 
-`packages` is the join between the two worlds: an advisory names a package, and a package resolves to the upstream repo whose issues we poll.
+`packages` is the join between the two worlds: an advisory names a package, and a package resolves to the upstream repo whose issues we poll. `osv_queries` has no foreign key: its rows are keyed by the version-less package URL and the version, so they survive a timeline rebuild.
 
 ### Part C. Triage, findings, settings and operations
 
@@ -399,20 +404,20 @@ erDiagram
 | Column | Notes |
 |---|---|
 | id | text primary key; the OSV id, for example `GO-2026-4599` or `GHSA-...` |
-| aliases | JSON array |
+| aliases | JSON array; `[]` when empty |
 | summary | |
 | details | |
-| severity_label | |
-| cvss_score | |
+| severity_label | `critical`, `high`, `medium` or `low`; NULL when unknown |
+| cvss_score | NULL when the record has no CVSS v3 vector |
 | cvss_vector | |
 | published_ts | |
 | modified_ts | |
 | withdrawn_ts | |
-| kev | default 0 |
+| kev | default 0; set from the KEV feed. Saving an advisory record leaves the exploit-signal columns (`kev`, `kev_added_ts`, `epss`, `epss_percentile`, `epss_ts`) of an existing row alone |
 | kev_added_ts | |
-| epss | |
-| epss_percentile | |
-| epss_ts | |
+| epss | NULL when no EPSS score is known |
+| epss_percentile | NULL when no EPSS score is known |
+| epss_ts | NULL when no EPSS score is known |
 | raw | JSON; the full OSV record |
 
 **advisory_affected**
@@ -422,12 +427,12 @@ erDiagram
 | id | |
 | advisory_id | |
 | package_id | |
-| ranges | JSON; OSV `ranges[]` as is |
-| versions | JSON; explicit `versions[]` list |
+| ranges | JSON; OSV `ranges[]` (`type`, `repo` for a `GIT` range, and `events`, each event with exactly one key); `[]` when the entry has none |
+| versions | JSON; explicit `versions[]` list; `[]` when empty |
 | ecosystem_specific | JSON; for Go, affected symbols live here |
 | source_db | `GO`, `PYSEC`, `GHSA`, `CVE` and so on; the prefix of the advisory id |
 
-**advisory_matches** has one row per (repo, package interval, advisory). Unique on (dep_version_id, advisory_id).
+**advisory_matches** has one row per (repo, package interval, advisory). Unique on (dep_version_id, advisory_id). The store replaces a repo's whole set of rows at once (`ReplaceMatches`); a row whose pair is still present keeps its ID.
 
 | Column | Notes |
 |---|---|
@@ -440,6 +445,14 @@ erDiagram
 | fixed_version | first fixed version at or above the pinned one, if known |
 | confidence | `high`, `medium` or `low` |
 | confidence_reason | |
+
+**osv_queries** remembers every (package, version) pair already sent to the OSV querybatch endpoint, so later runs query only new pairs. Primary key (purl, version).
+
+| Column | Notes |
+|---|---|
+| purl | version-less package URL |
+| version | |
+| queried_ts | when the pair was last sent; a repeat mark updates it |
 
 ### Upstream issues
 
@@ -558,7 +571,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | score | |
 | rank_reason | |
 | first_seen_ts | |
-| last_changed_ts | |
+| last_changed_ts | moved by an upsert only when the score or rank reason changes or a resolved finding comes back; set to the resolve time by a resolve |
 | resolved_ts | set when the pin leaves the affected range or the issue closes as not a bug; for a `job_failure` finding, when the next run of the job succeeds |
 | reported_in_digest_ts | |
 
@@ -580,9 +593,9 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | id | |
 | sent_ts | |
 | channel | the notifier that sent it; each enabled channel gets its own row |
-| status | |
-| payload | JSON |
-| error | text; the failure message when the send failed, otherwise empty |
+| status | `sent`, `failed` or `retried`; `retried` marks a failed row whose payload a newer row later sent successfully |
+| payload | JSON; the digest as built, so a failed send can be retried with it |
+| error | text; the failure message when the send failed, NULL when it succeeded |
 
 ### Eval
 
@@ -630,7 +643,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | Table | Reconstructible? | How |
 |---|---|---|
 | repos, commits, manifests, packages, dep_events, dep_versions | Yes | re-clone, re-index |
-| advisories, advisory_affected, advisory_matches | Yes | re-query OSV, KEV, EPSS (EPSS history is lost; current only) |
+| advisories, advisory_affected, advisory_matches, osv_queries | Yes | re-query OSV, KEV, EPSS (EPSS history is lost; current only) |
 | upstream_repos, package_upstream | Yes, apart from `manual` overrides | re-resolve; keep manual overrides in config, not only in the database |
 | upstream_issues, upstream_issue_comments | Mostly | re-poll; edited or deleted upstream content is gone, and backfill depth is bounded |
 | symbol_usage, issue_candidates | Yes | recompute |

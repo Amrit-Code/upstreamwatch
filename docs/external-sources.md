@@ -10,9 +10,9 @@ All calls go out from the binary. Nothing calls in. Failures never fail silently
 |---|---|---|---|---|---|---|
 | Target git remotes | Commit history and manifest file contents | `git` over https: `git init --bare`, then a fetch of the indexed branch only, no tags | Read-only token for private repos, sent as a header, never stored | 6 h | `GitSource` | job_failure finding; timeline stays at last good commit |
 | OSV API | Advisories for each package version | `POST /v1/querybatch`, `GET /v1/vulns/{id}` | None | 6 h | `AdvisorySource` | Keep stored advisories; retry next run |
-| OSV bucket | Which advisories changed since last look | `modified_id.csv` per ecosystem | None | Daily | `AdvisorySource` | Fall back to querybatch |
-| CISA KEV | Known-exploited flag per CVE | JSON download | None | Daily | `ExploitSignals` | Ranking uses yesterday's flags |
-| EPSS | Exploit probability per CVE | Gzipped CSV, follows redirect | None | Daily | `ExploitSignals` | Ranking uses yesterday's scores |
+| OSV bucket | Which advisories changed since last look | `modified_id.csv` per ecosystem, from `storage.googleapis.com/osv-vulnerabilities` | None | Daily | `AdvisorySource` | Fall back to querybatch |
+| CISA KEV | Known-exploited flag per CVE | JSON download of `known_exploited_vulnerabilities.json` from `www.cisa.gov` | None | Daily | `ExploitSignals` | Ranking uses yesterday's flags |
+| EPSS | Exploit probability per CVE | Gzipped CSV (`epss_scores-current.csv.gz` from `epss.empiricalsecurity.com`), follows redirect | None | Daily | `ExploitSignals` | Ranking uses yesterday's scores |
 | deps.dev | Package to source repo and issue tracker | `GET /v3/systems/.../versions/...` | None | Once per package, monthly refresh | `UpstreamResolver` | Next resolver in the chain |
 | packages.ecosyste.ms | Fallback for the same mapping | REST | None | On miss | `UpstreamResolver` | Package listed as unmapped on Coverage |
 | Go vanity hosts | Repo behind a non-GitHub module path | `GET https://path?go-get=1` | None | Once per module | `UpstreamResolver` | Unmapped on Coverage |
@@ -20,6 +20,8 @@ All calls go out from the binary. Nothing calls in. Failures never fail silently
 | LLM provider | One verdict per candidate | Anthropic SDK, or OpenAI-compatible chat endpoint | Your API key: `UPW_LLM_API_KEY`, or pasted into the settings page (the variable wins) | Hourly, capped per run and per day | `Provider` | Candidate stays queued and shows as unreviewed |
 | Your SMTP server | Nothing; we send the digest | SMTP from the standard library; config has host, port, username, password (from an environment variable), from and to | SMTP username and password | Daily, weekly heartbeat | `Notifier` | Digest row marked failed and retried; visible on Coverage |
 | Webhook or ntfy | Nothing; we send the digest | JSON POST | The URL is the secret | Daily, weekly heartbeat | `Notifier` | Digest row marked failed and retried; visible on Coverage |
+
+None of the OSV, KEV and EPSS requests uses stored validators (`ValidatorsNone`). The adapters bound what they read: an OSV `modified_id.csv` is capped at 256 MiB; the EPSS download is capped at 64 MiB and the CSV after gunzip at 256 MiB, and a feed with more than 1% malformed rows or no `cve,epss,percentile` header is an error; an entry in the KEV catalog without a CVE id is skipped. Errors from the two feeds name the scheme, host and path of the URL, never its query or userinfo.
 
 In the config, `notify` is a mapping with two keys: `channels`, a list with one entry per notifier, and `heartbeat`, a five-field cron expression for the "all quiet" message. A channel has a `type` (`email`, `discord_webhook`, `slack_webhook`, `ntfy` or `stdout`) and the fields of its type: `url` for the webhook and ntfy types; `host`, `port` (587 by default), `username`, `password`, `from` and `to` for email. The secret fields (a channel's `url`, an email `password`, the tokens and the LLM key) take only a `${NAME}` reference to an environment variable, as in `deploy/upw.example.yaml`, which uses `UPW_SMTP_PASSWORD` for the email password. The config loader holds them as `model.Secret`.
 
@@ -73,7 +75,7 @@ Both are GitHub tokens, so config validation rejects a target with `auth: target
 
 Libraries are not on the table above because they run inside the binary:
 
-- `git-pkgs/manifests`, `git-pkgs/vers`, `git-pkgs/purl` and `git-pkgs/vulns/osv`. `manifests` is pinned at v0.14.0 and parses the Python files and GitHub Actions workflows; `purl` is pinned at v0.2.1 (see [decisions.md](decisions.md))
+- `git-pkgs/manifests`, `git-pkgs/vers` and `git-pkgs/purl`. `manifests` is pinned at v0.14.0 and parses the Python files and GitHub Actions workflows; `purl` is pinned at v0.2.1 (see [decisions.md](decisions.md)); `vers` is v0.7.2 and, since M2, a direct dependency that `internal/vuln` uses to compare versions in each ecosystem's scheme. The OSV adapter talks to the OSV HTTP API through `httpx` itself and does not use `git-pkgs/vulns/osv`
 - `golang.org/x/mod/modfile` (v0.43.0), for `go.mod`: the `manifests` library ignores `replace` directives and the `go` and `toolchain` lines (see [decisions.md](decisions.md))
 - `modernc.org/sqlite`
 - `robfig/cron/v3`

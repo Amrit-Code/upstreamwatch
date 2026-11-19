@@ -126,7 +126,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 | `internal/usage` | 2 Service (job) | The symbol-usage index. Adapters are the two packages below. |
 | `internal/usage/golang` | 4 Adapter | `UsageIndexer` for Go source, using `go/parser`. |
 | `internal/usage/python` | 4 Adapter | `UsageIndexer` for Python source, by import scan. |
-| `internal/vuln` | 2 Service (job) | Advisory matching, exposure window and confidence. Adapters in `vuln/osv`, `vuln/kev`, `vuln/epss`. |
+| `internal/vuln` | 2 Service (job) | Advisory matching, exposure window and confidence: range evaluation, the fixed version, confidence and the exposure window are unexported functions here, not methods on `model.Advisory`. May import `git-pkgs/vers`. Adapters in `vuln/osv`, `vuln/kev`, `vuln/epss`. |
 | `internal/upstream` | 2 Service (job) | Package to upstream repo resolution, first resolver wins. Resolvers are subpackages. |
 | `internal/issues` | 2 Service (job) | `Poller`: upstream issues and comments with cursors. Adapter in `issues/github`. |
 | `internal/prefilter` | 2 Service (job) | Feature extraction and weighted score for issue candidates. |
@@ -151,7 +151,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
-After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end. `cmd/upw` also wraps each job so that it runs under an exclusive lock file, `<data_dir>/locks/<job>.lock`, so a `upw run` beside `upw serve` on one data directory waits until the other process's run of the same job ends, or until its own context ends.
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. M2 has added so far, without a job registered yet: `internal/vuln` (the matching rules and the interfaces the vulns job uses), `internal/vuln/kev` and `internal/vuln/epss` (the two feed adapters), the advisory methods of `internal/vuln/osv`, and the advisory, finding-state, digest and backup methods of `internal/store`. `internal/report`, `internal/findings` and `internal/ops` hold only their package comments and the interfaces their services will use. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end. `cmd/upw` also wraps each job so that it runs under an exclusive lock file, `<data_dir>/locks/<job>.lock`, so a `upw run` beside `upw serve` on one data directory waits until the other process's run of the same job ends, or until its own context ends.
 
 ## What each job does
 
@@ -162,7 +162,7 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | ingest | `ingest.Service` | none (the URL and host policy is applied inside `GitSource`) | `GitSource` | repos |
 | timeline | `timeline.Service` | diff manifest states into events; fold events into intervals | `GitSource`, `Extractor` | commits, manifests, packages, dep_events, dep_versions |
 | usage | `usage.Service` | none | `GitSource`, `UsageIndexer` | symbol_usage |
-| vulns | `vuln.Service` | version in range; exposure window; confidence label | `AdvisorySource`, `ExploitSignals` | advisories, advisory_affected, advisory_matches, findings |
+| vulns | `vuln.Service` | version in range; exposure window; confidence label | `AdvisorySource`, `ExploitSignals` | advisories, advisory_affected, advisory_matches, osv_queries, kv, findings |
 | upstream | `upstream.Service` | resolver order, first hit wins | `UpstreamResolver` chain | upstream_repos, package_upstream |
 | issues | `issues.Poller` | cursor and backfill bounds | `IssueSource` | upstream_issues, upstream_issue_comments, cursors on upstream_repos |
 | prefilter | `prefilter.Service` | feature extraction and weighted score | nothing external | issue_candidates |

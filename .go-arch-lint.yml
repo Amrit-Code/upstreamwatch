@@ -32,7 +32,6 @@ vendors:
   manifests:  { in: [ github.com/git-pkgs/manifests, github.com/git-pkgs/manifests/** ] }
   vers:       { in: github.com/git-pkgs/vers }
   purl:       { in: github.com/git-pkgs/purl }
-  osvlib:     { in: [ github.com/git-pkgs/vulns/osv, github.com/git-pkgs/vulns/osv/** ] }
   xmod:       { in: golang.org/x/mod/modfile }
   anthropic:  { in: [ github.com/anthropics/anthropic-sdk-go, github.com/anthropics/anthropic-sdk-go/** ] }
 
@@ -103,7 +102,7 @@ deps:
     mayDependOn: [ llm ]
   gitsrc:           { mayDependOn: [ httpx ] }
   extract:          { canUse: [ manifests, xmod, yaml ] }
-  vuln-osv:         { mayDependOn: [ httpx ], canUse: [ osvlib ] }
+  vuln-osv:         { mayDependOn: [ httpx ] }
   vuln-kev:         { mayDependOn: [ httpx ] }
   vuln-epss:        { mayDependOn: [ httpx ] }
   upstream-resolve: { mayDependOn: [ httpx ] }

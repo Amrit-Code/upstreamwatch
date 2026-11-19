@@ -15,7 +15,7 @@ require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/git-pkgs/manifests v0.14.0 // indirect
 	github.com/git-pkgs/pom v0.1.8 // indirect
-	github.com/git-pkgs/purl v0.1.24 // indirect
+	github.com/git-pkgs/purl v0.2.1 // indirect
 	github.com/git-pkgs/vers v0.7.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

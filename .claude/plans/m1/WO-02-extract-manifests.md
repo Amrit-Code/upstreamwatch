@@ -117,4 +117,13 @@ Follow the report contract in your agent definition: full report to the report f
 
 ## Rulings
 
-None.
+2026-11-19, on the concerns in round 0:
+- Requirement 15: skipping steps whose `uses` starts with `docker://`, and any entry without a PURL, is accepted.
+- Lockfiles: drop every `uv.lock` or `poetry.lock` entry that is a local-path, editable or virtual package (the project's own root, path dependencies), using whatever source information the library returns for it. If the library gives no way to tell, report that instead of guessing by name. Recorded in `docs/decisions.md`.
+- Go PURL case: `go.mod` now pins `github.com/git-pkgs/purl` v0.2.1 (your worktree has it), with which the library keeps module-path case. Keep requirements 3 and 6 as written, and add a test that the PURL you build for a mixed-case module (`github.com/BurntSushi/toml`) equals what `manifests.Parse` returns for the same require line.
+- `go.mod` tidying is the lead's after merge.
+
+2026-11-19, on fix round 1:
+- poetry.lock filtering by a path-like `RegistryURL` is accepted.
+- uv.lock: no TOML library (it is not approved). uv writes the lockfile itself, one `[[package]]` table per package with `name = "..."` and an inline `source = { ... }` on one line each. Scan the content line by line with the standard library: within each `[[package]]` table, note the name, and mark the package local when its `source` inline table's first key is `editable`, `virtual`, `directory` or `path`. Drop marked names from the library's output. A package whose source line cannot be read stays (do not guess). Add a test on a real uv.lock: copy the current `uv.lock` of the MIT-licensed `github.com/fastapi/typer` into `testdata/` (`gh api repos/fastapi/typer/contents/uv.lock -q .content | base64 -d`), and assert that `typer` itself is dropped and a few registry packages remain; keep a small hand-written case with `editable`, `virtual`, `directory`, `path`, `git` and `registry` sources (only the git and registry ones remain).
+

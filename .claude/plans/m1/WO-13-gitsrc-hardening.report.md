@@ -158,3 +158,78 @@ Concerns: none
 ## Gate (lead, 2026-11-19)
 
 make check rerun: exit 0; 33 gitsrc tests pass. Sonnet reviewer: ACCEPT (log cap kills and reaps git; a rejected fetch never moves the branch; prune and removal stay inside the clone). Minors: parse memory is a few times the 64 MiB log cap (accepted, bounded); prune can delete an unreachable last-indexed commit, which made IsAncestor error after a force-push: fixed in fix round 1. Lead proved TestIsAncestor_PrunedAfterForcePush fails with the fix disabled ("Not a valid commit name") and passes with it. Accepted.
+
+## Fix round 2
+
+Status: DONE
+Work order: .claude/plans/m1/WO-13-gitsrc-hardening.md (lead follow-up: two tests failing on ubuntu-latest CI)
+Files changed:
+- internal/gitsrc/cli.go (modified): `command()`, which builds every git process (`run`/`output`, `cat-file` in blobs.go, `git log` in history.go, fetch, prune), now sets `SysProcAttr{Setpgid: true}` and `cmd.Cancel`. Cancel calls the new `killGroup(pid)`, which sends SIGKILL to `-pid` and maps ESRCH to `os.ErrProcessDone`. `WaitDelay` is unchanged.
+- internal/gitsrc/sync_test.go (modified): new `TestSync_SizeCapKillsProcessGroup` and its `processRunning` helper
+- internal/gitsrc/history_test.go (modified): `TestIsAncestor_PrunedAfterForcePush` setup rewritten; new `objectFiles` helper
+- .claude/plans/m1/WO-13-gitsrc-hardening.report.md (modified)
+
+What was wrong and why the change fixes it on Linux:
+1. TestSync_IncrementalCapRemovesObjects, "TempDir RemoveAll cleanup: directory not empty"
+   - Cause: `exec.CommandContext` killed only the git parent when the size watch cancelled a fetch. `git fetch` runs `index-pack` (and, for a file:// remote, `upload-pack`) as child processes. A surviving `index-pack` kept writing into `objects/pack` while `shrinkAfterCap` pruned or removed the clone, and while the test's TempDir cleanup ran.
+   - Why only CI: the Mac usually finishes the 2 MiB fetch before the first 250 ms check, so the post-fetch measurement path runs and nothing is killed. The slower CI runner hits the mid-transfer kill path.
+   - Fix: git now leads its own process group and cancellation SIGKILLs the whole group. After SIGKILL a process never returns to user space, so at most a write syscall already in progress completes; no new files are created after Wait returns. This is a production fix: the same orphans could write into a clone being removed in deployment.
+   - Proof: with the two production lines temporarily replaced, `TestSync_SizeCapKillsProcessGroup` failed: `process 7572 from the cancelled fetch is still running`, `process 7573 ...` (6.30 s, the WaitDelay wait while the orphans held the pipes). With them restored it passes in 0.5 s.
+   - Test design: a stand-in git on PATH execs the real git for everything except `fetch`. For `fetch` it records its own PID, starts two `sleep 60` children and records their PIDs, writes 1 MiB into `$dir/objects/pack`, and `wait`s. The test asserts the cap error, the removed clone directory, and that none of the three processes is running.
+   - Liveness is checked with `ps -o stat= -p <pid>`. No output means gone, and a `Z` state counts as dead, because on Linux an orphan killed with its group stays a zombie until init reaps it and `kill(pid, 0)` succeeds on a zombie. ps is polled at most 200 times, with no sleeping.
+   - A `t.Cleanup` SIGKILLs any recorded PID so a failure cannot leak processes. The script is POSIX sh (dash on Ubuntu) using `head -c` and `sleep`.
+2. TestIsAncestor_PrunedAfterForcePush, "old commit ... still in the clone after repack and prune"
+   - I could not establish why the Linux runner's git kept the old commit after `repack -a -d` plus `prune --expire=now`. A probe on the Mac shows the clone holds only two packs (no `.keep` files, no reflogs, no refs other than `refs/heads/main`), so nothing in our layout should keep it.
+   - Possible version-dependent causes include automatic maintenance writing a multi-pack-index or commit-graph, and repack defaults. Rather than guess, the setup no longer depends on git's collection.
+   - New setup: it records the object files (packs and loose objects, not `objects/info`) after the first sync. After the force-push sync it deletes exactly those files, plus any `objects/info/commit-graph*` and `objects/pack/multi-pack-index*`, which are optional caches that could still name the old commit or the removed packs.
+   - This is valid because the fetches keep packs whole (unpackLimit=1, and `--fix-thin` makes the kept pack self-contained), and the rewritten history shares no object with the old one, so every object the new history needs is in files the later fetch wrote.
+   - The test then confirms with `cat-file --batch-all-objects --batch-check` that the old commit is gone and the new head is present, before asserting `IsAncestor(old, newHead) == false, nil`. A comment in the test says the fixture removes the object files directly and why.
+
+Commands run:
+- `go test -count=1 -run SizeCapKillsProcessGroup ./internal/gitsrc/` with the Setpgid/Cancel lines temporarily removed -> exit 1
+  --- FAIL: TestSync_SizeCapKillsProcessGroup (6.30s)
+      sync_test.go:600: process 7572 from the cancelled fetch is still running
+      sync_test.go:600: process 7573 from the cancelled fetch is still running
+  FAIL
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	6.533s
+  (lines restored afterwards; `pgrep -fl "sleep 60"` showed nothing left)
+- `go test -race -count=3 -run 'IsAncestor|SizeCap|IncrementalCap' ./internal/gitsrc/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	4.244s
+- `GOOS=linux go vet ./internal/gitsrc/` and `GOOS=linux go test -c -o /dev/null ./internal/gitsrc/` -> exit 0 (linux-compile-ok)
+- `gofmt -l .` -> exit 0 (no output)
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	9.109s
+  ...
+  ==> arch-lint
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=1 -v ./internal/gitsrc/` -> exit 0 (selected lines)
+  --- PASS: TestManifestCommits_LogCap (3.92s)
+  --- PASS: TestSync_SizeCapKillsProcessGroup (0.52s)
+  --- PASS: TestSync_FetchKeepsPacks (0.63s)
+  --- PASS: TestSync_SizeCap (0.40s)
+  --- PASS: TestSync_IncrementalCapRemovesObjects (0.82s)
+  --- PASS: TestHeadAndIsAncestor (0.57s)
+  --- PASS: TestIsAncestor_PrunedAfterForcePush (0.52s)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	7.493s
+- `git status --porcelain` -> exit 0
+   M internal/gitsrc/cli.go
+   M internal/gitsrc/history_test.go
+   M internal/gitsrc/sync_test.go
+  (plus this report file)
+
+Decisions:
+- The process-group setup sits in `command()`, the one constructor of every git `exec.Cmd` in gitsrc, so all invocations get it, the cat-file and git log processes included, without separate edits in blobs.go and history.go.
+- `syscall.Kill` and `Setpgid` are Unix-only, so gitsrc no longer builds for Windows. Nothing in the Makefile or CI targets Windows, and the deployment is a Linux container. If Windows matters later, this would need build-tagged files.
+- With its own process group, git no longer receives a terminal's Ctrl-C directly. upw turns SIGINT/SIGTERM into context cancellation, which now kills the whole group, so shutdown behaviour is unchanged apart from also taking the children with it.
+- Cancellation is the only time the group is killed (the lead's spec). A child that outlives a git parent that exited on its own is not handled; git waits for its helpers before exiting.
+
+Outside scope:
+- Not established: why the Linux runner's `git repack -a -d` plus `prune --expire=now` kept the old commit. If production relies on git collecting unreachable history (it does not today: `shrinkAfterCap` only expects prune to remove loose objects and tmp packs, and removes the clone otherwise), this is worth a look with the CI git version.
+
+Concerns: none
+
+## Gate, fix round 2 (lead, 2026-11-19)
+
+CI on ubuntu-latest failed TestSync_IncrementalCapRemovesObjects (temp dir not empty: surviving git children) and TestIsAncestor_PrunedAfterForcePush (old commit not pruned by the test setup). Round 2: every git process (all built by g.command) now leads its own process group and cancellation SIGKILLs the group; the test setup is made robust. make check rerun on the Mac: exit 0. CI result recorded after the push.

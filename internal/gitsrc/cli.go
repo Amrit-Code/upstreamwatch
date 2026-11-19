@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -205,7 +206,23 @@ func (g *CLI) command(ctx context.Context, inv invocation, stderr *cappedBuffer)
 	cmd.Stdout = inv.stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
+	// git runs helpers as child processes (index-pack, the transport and
+	// upload-pack). Killing only git on cancellation would leave them
+	// writing into the clone while it is pruned or removed, so git leads
+	// its own process group and cancellation kills the whole group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
 	return cmd, nil
+}
+
+// killGroup sends SIGKILL to the process group led by pid. A group that has
+// already exited is reported as os.ErrProcessDone, which Wait ignores.
+func killGroup(pid int) error {
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 // run runs inv to completion.

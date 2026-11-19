@@ -313,8 +313,10 @@ func (a *timelineApply) upsertManifests(ctx context.Context, manifests map[strin
 }
 
 // upsertPackages upserts one packages row per distinct purl in events and
-// intervals, in order of first appearance. A row whose ecosystem and name are
-// unchanged is not rewritten.
+// intervals, in order of first appearance. The insert sets the name; an
+// existing row keeps the first spelling seen (docs/decisions.md) and only
+// gains an ecosystem it lacked, so a row with nothing to gain is not
+// rewritten.
 func (a *timelineApply) upsertPackages(ctx context.Context, events []model.DepEvent, intervals []model.DepInterval) error {
 	var pkgs []model.Package
 	seen := map[string]bool{}
@@ -336,9 +338,8 @@ func (a *timelineApply) upsertPackages(ctx context.Context, events []model.DepEv
 			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT (purl) DO UPDATE SET
 				ecosystem = excluded.ecosystem,
-				name = excluded.name,
 				updated_ts = excluded.updated_ts
-			 WHERE ecosystem IS NOT excluded.ecosystem OR name IS NOT excluded.name`,
+			 WHERE (ecosystem IS NULL OR ecosystem = '') AND excluded.ecosystem IS NOT NULL`,
 			p.PURL, nullText(p.Ecosystem), nullText(p.Name), a.now, a.now); err != nil {
 			return fmt.Errorf("upsert package %q: %w", p.PURL, err)
 		}

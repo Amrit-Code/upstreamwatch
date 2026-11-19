@@ -16,28 +16,31 @@ import (
 )
 
 // registeredJobs returns every job the Runner knows, in pipeline order: the
-// ingest job, then the timeline job. Both share one git client. Constructing
-// them does no I/O.
+// ingest job, then the timeline job. Both share one git client. Each job runs
+// under its lock file in <data_dir>/locks, so two processes on one data
+// directory never run the same job at once. Constructing them does no I/O.
 func registeredJobs(cfg config.Config, db *store.DB, logger *slog.Logger) []pipeline.Job {
 	git := gitsrc.New(gitOptions(cfg), logger)
 	extractors := []timeline.Extractor{
 		extract.New(extract.Options{DeriveToolchainFromImages: cfg.Vulns.DeriveToolchainFromImages}, logger),
 	}
-	return []pipeline.Job{
+	return withJobLocks(filepath.Join(cfg.DataDir, "locks"), []pipeline.Job{
 		ingest.NewService(git, db, ingest.Options{Targets: ingestTargets(cfg)}, logger),
 		timeline.NewService(git, db, db, extractors, unity.New(), timeline.Options{Targets: timelineTargets(cfg)}, logger),
-	}
+	})
 }
 
 // gitOptions returns the git client settings: clones under <data_dir>/repos,
-// git's HOME at <data_dir>/git-home, the size cap and timeouts from the git
-// config section, and no file:// URLs. LookupHost is left nil so the client
-// uses the system resolver for the private-address check.
+// git's HOME at <data_dir>/git-home, the clone and blob size caps and the
+// timeouts from the git config section, and no file:// URLs. LookupHost is
+// left nil so the client uses the system resolver for the private-address
+// check.
 func gitOptions(cfg config.Config) gitsrc.Options {
 	return gitsrc.Options{
 		ReposDir:      filepath.Join(cfg.DataDir, "repos"),
 		HomeDir:       filepath.Join(cfg.DataDir, "git-home"),
 		MaxCloneBytes: int64(cfg.Git.MaxCloneMB) << 20,
+		MaxBlobBytes:  int64(cfg.Git.MaxBlobMB) << 20,
 		CloneTimeout:  cfg.Git.CloneTimeout,
 		FetchTimeout:  cfg.Git.FetchTimeout,
 		AllowFileURLs: false,

@@ -197,6 +197,7 @@ func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 		},
 		Git: Git{
 			MaxCloneMB:   f.Git.MaxCloneMB,
+			MaxBlobMB:    f.Git.MaxBlobMB,
 			CloneTimeout: dur("git.clone_timeout", f.Git.CloneTimeout),
 			FetchTimeout: dur("git.fetch_timeout", f.Git.FetchTimeout),
 		},

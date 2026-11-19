@@ -29,6 +29,7 @@ targets:
 
 git:                                   # bare clones under <data_dir>/repos
   max_clone_mb: 2048                   # size cap on one clone, in MiB
+  max_blob_mb: 8                       # files larger than this, in MiB, are not read (at least 1)
   clone_timeout: 30m                   # deadline for a first clone (Go duration)
   fetch_timeout: 10m                   # deadline for every later fetch
 

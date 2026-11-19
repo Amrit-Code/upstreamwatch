@@ -136,9 +136,11 @@ type Retention struct {
 }
 
 // Git limits the bare clones of the targets: MaxCloneMB caps one clone's size
-// in MiB, CloneTimeout bounds a first sync and FetchTimeout every later one.
+// in MiB, MaxBlobMB caps the size of one file read from a clone in MiB,
+// CloneTimeout bounds a first sync and FetchTimeout every later one.
 type Git struct {
 	MaxCloneMB   int
+	MaxBlobMB    int
 	CloneTimeout time.Duration
 	FetchTimeout time.Duration
 }

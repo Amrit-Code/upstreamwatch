@@ -107,8 +107,18 @@ func writeTimelineText(w io.Writer, intervals []model.DepInterval) error {
 // terminalSafe returns s, or its strconv.Quote form when s holds a control
 // character (C0, DEL or C1) or is not valid UTF-8, so repository data cannot
 // move the cursor, clear the screen or break the table's columns.
-func terminalSafe(s string) string {
-	if !utf8.ValidString(s) || strings.ContainsFunc(s, unicode.IsControl) {
+func terminalSafe(s string) string { return quoteUnsafe(s, "") }
+
+// terminalSafeText is terminalSafe for message text such as an error or a
+// stats line: a newline or a tab alone does not cause quoting, so an error
+// that joins several problems still prints one per line.
+func terminalSafeText(s string) string { return quoteUnsafe(s, "\n\t") }
+
+// quoteUnsafe returns s, or its strconv.Quote form when s is not valid UTF-8
+// or holds a control character that is not in keep.
+func quoteUnsafe(s, keep string) string {
+	unsafe := func(r rune) bool { return unicode.IsControl(r) && !strings.ContainsRune(keep, r) }
+	if !utf8.ValidString(s) || strings.ContainsFunc(s, unsafe) {
 		return strconv.Quote(s)
 	}
 	return s

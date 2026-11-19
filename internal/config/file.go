@@ -124,6 +124,7 @@ type fileRetention struct {
 // is reported with its field like every other validation problem.
 type fileGit struct {
 	MaxCloneMB   int    `yaml:"max_clone_mb"`
+	MaxBlobMB    int    `yaml:"max_blob_mb"`
 	CloneTimeout string `yaml:"clone_timeout"`
 	FetchTimeout string `yaml:"fetch_timeout"`
 }
@@ -174,6 +175,7 @@ func defaultFile() fileConfig {
 		},
 		Git: fileGit{
 			MaxCloneMB:   2048,
+			MaxBlobMB:    8,
 			CloneTimeout: "30m",
 			FetchTimeout: "10m",
 		},

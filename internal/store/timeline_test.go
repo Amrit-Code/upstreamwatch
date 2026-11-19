@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -533,5 +534,84 @@ func TestDB_ApplyTimeline_Errors(t *testing.T) {
 				t.Errorf("commits after a failed update = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// packageRow reads the stored ecosystem, name and updated_ts of purl.
+func packageRow(t *testing.T, db *DB, purl string) (ecosystem, name, updated string) {
+	t.Helper()
+	var eco, nm sql.NullString
+	if err := db.pool.QueryRowContext(t.Context(),
+		`SELECT ecosystem, name, updated_ts FROM packages WHERE purl = ?`, purl).Scan(&eco, &nm, &updated); err != nil {
+		t.Fatalf("read package %q: %v", purl, err)
+	}
+	return eco.String, nm.String, updated
+}
+
+// packageUpdate is a timeline update of the repo holding one open interval of
+// p from commit 1.
+func packageUpdate(repoID int64, p model.Package) model.TimelineUpdate {
+	return model.TimelineUpdate{
+		RepoID:     repoID,
+		Manifests:  map[string]model.ManifestInfo{"go.mod": goMod},
+		Intervals:  []model.DepInterval{openInterval(p, "3.1.2", 1)},
+		IndexedSHA: sha(1),
+	}
+}
+
+func TestDB_ApplyTimeline_PackageKeepsFirstSpelling(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	repoID := newTimelineRepo(t, db)
+	const purl = "pkg:pypi/jinja2"
+
+	first := packageUpdate(repoID, model.Package{PURL: purl, Ecosystem: "pypi", Name: "Jinja2"})
+	first.Commits = []model.Commit{commitAt(1)}
+	apply(t, db, first)
+	db.now = func() time.Time { return t0.Add(time.Hour) }
+	apply(t, db, packageUpdate(repoID, model.Package{PURL: purl, Ecosystem: "pypi", Name: "jinja2"}))
+
+	eco, name, updated := packageRow(t, db, purl)
+	if name != "Jinja2" {
+		t.Errorf("packages.name after a respelled upsert = %q, want %q", name, "Jinja2")
+	}
+	if eco != "pypi" {
+		t.Errorf("packages.ecosystem = %q, want %q", eco, "pypi")
+	}
+	if updated != ts0 {
+		t.Errorf("packages.updated_ts after a respelled upsert = %q, want %q (unchanged)", updated, ts0)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM packages WHERE purl = ?`, purl); n != 1 {
+		t.Errorf("packages rows for %q = %d, want 1", purl, n)
+	}
+}
+
+func TestDB_ApplyTimeline_PackageGainsOnlyAMissingEcosystem(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	repoID := newTimelineRepo(t, db)
+	const purl = "pkg:pypi/requests"
+
+	first := packageUpdate(repoID, model.Package{PURL: purl, Name: "Requests"})
+	first.Commits = []model.Commit{commitAt(1)}
+	apply(t, db, first)
+	later := t0.Add(time.Hour)
+	db.now = func() time.Time { return later }
+	apply(t, db, packageUpdate(repoID, model.Package{PURL: purl, Ecosystem: "pypi", Name: "requests"}))
+
+	eco, name, updated := packageRow(t, db, purl)
+	if eco != "pypi" || name != "Requests" {
+		t.Errorf("package = ecosystem %q name %q, want %q %q", eco, name, "pypi", "Requests")
+	}
+	if want := later.Format(time.RFC3339); updated != want {
+		t.Errorf("packages.updated_ts after gaining an ecosystem = %q, want %q", updated, want)
+	}
+
+	// An ecosystem already set is not replaced.
+	db.now = func() time.Time { return later.Add(time.Hour) }
+	apply(t, db, packageUpdate(repoID, model.Package{PURL: purl, Ecosystem: "other", Name: "requests"}))
+	if eco, _, updated := packageRow(t, db, purl); eco != "pypi" || updated != later.Format(time.RFC3339) {
+		t.Errorf("package after another ecosystem = %q updated %q, want %q updated %q",
+			eco, updated, "pypi", later.Format(time.RFC3339))
 	}
 }

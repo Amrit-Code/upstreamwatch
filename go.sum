@@ -10,8 +10,6 @@ github.com/git-pkgs/manifests v0.14.0 h1:UE+kxktTLN77XiaklhlhzG0zD8GAd/g2lOjQepO
 github.com/git-pkgs/manifests v0.14.0/go.mod h1:+yP/Ivk5j9MDfs7G70BlzxWnFB8q+kFOWtbLhXd+OT0=
 github.com/git-pkgs/pom v0.1.8 h1:mXCuWw6XkrKKZb6IurRZyIznYLPhV5AYg5ZO38Uj/l8=
 github.com/git-pkgs/pom v0.1.8/go.mod h1:sQBeYRzjCUn77fcABPn6I/a1aBHFxm55jTmkNxYtGtw=
-github.com/git-pkgs/purl v0.1.24 h1:JMEB1uNWI+baEpl6AeVx+Kfq1c+xkou+THxa5KJ3MrU=
-github.com/git-pkgs/purl v0.1.24/go.mod h1:l8rCfvt5iXVrFIcoQ8+vCLOaHhrtEW2id0LENP+IzMw=
 github.com/git-pkgs/purl v0.2.1 h1:b46hRlOMbrG6aXjjFJdYixGi5WTh0TLlAnH9iNeuOS0=
 github.com/git-pkgs/purl v0.2.1/go.mod h1:l8rCfvt5iXVrFIcoQ8+vCLOaHhrtEW2id0LENP+IzMw=
 github.com/git-pkgs/vers v0.7.2 h1:Ctex1O+Ai/FONmyDaw37EolBXg0og6UdxbCjjYbeRHs=
@@ -34,8 +32,6 @@ github.com/robfig/cron/v3 v3.0.1 h1:WdRxkvbJztn8LMz/QEvLN5sBU+xKpSqwwUO1Pjr4qDs=
 github.com/robfig/cron/v3 v3.0.1/go.mod h1:eQICP3HwyT7UooqI/z+Ov+PtYAWygg1TEWWzGIFLtro=
 go.yaml.in/yaml/v3 v3.0.6 h1:zcDfvjXEqTQmpjniUBLc91xYJMB2c4QOFxEF/LCEckM=
 go.yaml.in/yaml/v3 v3.0.6/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
-golang.org/x/mod v0.42.0 h1:ICeL3t2L30ljSPHHxDnR4fqVcBt/zR2zJAb9juavmQg=
-golang.org/x/mod v0.42.0/go.mod h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs=
 golang.org/x/mod v0.43.0 h1:MFuq5J6s35W9D3IjkwyWc9vHh0nENOrt5K8Iof4ofmg=
 golang.org/x/mod v0.43.0/go.mod h1:4ec1JnuyBz5+FIVhg86UsA39YG8BpnrZdJYSNHmGzHY=
 golang.org/x/sync v0.24.0 h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=

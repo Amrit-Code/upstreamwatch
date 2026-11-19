@@ -34,7 +34,7 @@ Read-only for you: `internal/gitsrc/` (WO-13 runs in parallel), `internal/extrac
 4. **Events per target run**: if a target's run would produce more than 500,000 new events, fail that target with an error naming the limit before calling `ApplyTimeline` (the other targets continue, as for any target failure).
 5. **CLI text output**: in `upw timeline` text mode, any field containing a control character (below 0x20 or 0x7f) is printed as its `strconv.Quote` form. JSON output is unchanged.
 6. **Token host restriction (config validation)**: a target with `auth: targets` or `auth: upstream` whose URL host is not `github.com` is rejected by config validation with an error naming `targets[i].auth` and the host. `auth: none` is allowed for any host.
-7. **CI**: in the `check` job of `.github/workflows/ci.yml`, add a step after `make check` that runs `go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...`; a reported vulnerability fails the job.
+7. **CI**: in the `check` job of `.github/workflows/ci.yml`, add a step after `make check` that runs `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`; a reported vulnerability fails the job.
 
 ## Tests to include
 

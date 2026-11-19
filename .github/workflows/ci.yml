@@ -22,7 +22,7 @@ jobs:
       - name: make check
         run: make check
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   e2e:
     runs-on: ubuntu-latest

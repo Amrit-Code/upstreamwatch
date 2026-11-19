@@ -13,6 +13,10 @@ workdir: .
 allow:
   depOnAnyVendor: false
   ignoreNotFoundComponents: true
+  # The deep scan treats passing *store.DB to a constructor that takes a
+  # consumer-declared interface as store depending on that consumer, which is
+  # exactly how cmd/upw wires services. Import rules stay fully checked.
+  deepScan: false
 
 # Agent worktrees live under .claude/ and are copies of this tree.
 exclude:

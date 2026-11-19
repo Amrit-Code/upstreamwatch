@@ -29,12 +29,14 @@ var refusedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),   // documentation
 	netip.MustParsePrefix("64:ff9b:1::/48"),  // local-use NAT64
 	netip.MustParsePrefix("2001::/32"),       // Teredo
+	netip.MustParsePrefix("fec0::/10"),       // deprecated site-local
 }
 
 // IPv6 ranges that embed an IPv4 address, which the policy judges instead.
 var (
 	nat64     = netip.MustParsePrefix("64:ff9b::/96") // IPv4 in the last 4 bytes
 	sixToFour = netip.MustParsePrefix("2002::/16")    // IPv4 in bytes 2 to 5
+	v4Compat  = netip.MustParsePrefix("::/96")        // IPv4-compatible, IPv4 in the last 4 bytes
 )
 
 // blockedAddr reports whether the address policy refuses a connection to a.
@@ -57,7 +59,8 @@ func blockedAddr(a netip.Addr) bool {
 	}
 	b := a.As16()
 	switch {
-	case nat64.Contains(a):
+	case nat64.Contains(a), v4Compat.Contains(a):
+		// :: and ::1 in v4Compat were refused above as unspecified and loopback.
 		return blockedAddr(netip.AddrFrom4([4]byte(b[12:16])))
 	case sixToFour.Contains(a):
 		return blockedAddr(netip.AddrFrom4([4]byte(b[2:6])))
@@ -176,11 +179,12 @@ func leftFirstHost(r *http.Request) bool {
 }
 
 // keptOnForeignRedirect reports whether a request header survives a redirect
-// to another host. Everything else, credentials and validators included, is
-// removed.
+// to another host. Content-Type is kept so a POST re-sent on a 307 or 308
+// still describes its body. Everything else, credentials and validators
+// included, is removed.
 func keptOnForeignRedirect(key string) bool {
 	switch http.CanonicalHeaderKey(key) {
-	case "User-Agent", "Accept", "Accept-Encoding", "Accept-Language":
+	case "User-Agent", "Accept", "Accept-Encoding", "Accept-Language", "Content-Type":
 		return true
 	}
 	return false

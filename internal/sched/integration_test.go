@@ -195,10 +195,8 @@ func TestIntegration_StopWithCancelledContextWhenIdle(t *testing.T) {
 			s.Start(t.Context())
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			// Nothing is running, so there is nothing to wait for.
-			// BUG: scheduler.go:159-163 selects on cron's done context, which
-			// a goroutine closes later, against an already-done ctx, so Stop
-			// returns ctx.Err() even with no chain running.
+			// Nothing is running, so there is nothing to wait for: Stop
+			// returns nil when no chain is running, whatever the context.
 			if err := s.Stop(ctx); err != nil {
 				t.Errorf("Stop(cancelled ctx) after Start with no chain running error = %v, want nil", err)
 			}

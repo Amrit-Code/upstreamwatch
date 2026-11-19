@@ -79,6 +79,13 @@ func TestBlockedAddr(t *testing.T) {
 		{"2001::1", true},
 		{"2001:0:ffff:ffff::1", true},
 		{"2001:1::1", false},
+		// deprecated site-local is refused outright
+		{"fec0::1", true},
+		{"feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true},
+		// IPv4-compatible addresses are judged by the embedded IPv4 address
+		{"::10.0.0.1", true},
+		{"::127.0.0.1", true},
+		{"::8.8.8.8", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.addr, func(t *testing.T) {

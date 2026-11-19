@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -900,6 +901,96 @@ func TestRedirect_CrossHostStripsHeaders(t *testing.T) {
 			ua := got.Get("User-Agent")
 			if ua == "" || (via == "Do" && ua != "upstreamwatch") {
 				t.Errorf("redirected request User-Agent = %q, want it kept", ua)
+			}
+		})
+	}
+}
+
+// bodyRecorder records the method, headers and body of the latest request
+// it receives and answers 200 "done".
+type bodyRecorder struct {
+	mu     sync.Mutex
+	method string
+	header http.Header
+	body   []byte
+	hits   int
+}
+
+func (b *bodyRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	b.mu.Lock()
+	b.method, b.header, b.body = r.Method, r.Header.Clone(), body
+	b.hits++
+	b.mu.Unlock()
+	fmt.Fprint(w, "done")
+}
+
+func TestRedirect_CrossHost307KeepsContentTypeAndBody(t *testing.T) {
+	t.Parallel()
+	const payload = `{"text":"digest"}`
+	headers := func() http.Header {
+		return http.Header{
+			"Authorization": {"Bearer tok-redirect"},
+			"X-Api-Key":     {"key-redirect"},
+			"Content-Type":  {"application/json"},
+		}
+	}
+	for _, via := range []string{"Do", "HTTPClient"} {
+		t.Run(via, func(t *testing.T) {
+			t.Parallel()
+			second := &bodyRecorder{}
+			secondSrv := httptest.NewServer(second)
+			t.Cleanup(secondSrv.Close)
+			firstSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, secondSrv.URL+"/final", http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(firstSrv.Close)
+
+			switch via {
+			case "Do":
+				c := newTestClient(t, Options{})
+				req := Request{Method: http.MethodPost, URL: firstSrv.URL + "/start", Header: headers(), Body: []byte(payload)}
+				if _, err := c.Do(t.Context(), req); err != nil {
+					t.Fatalf("Do(POST) error = %v", err)
+				}
+			case "HTTPClient":
+				hc := New(nil, Options{AllowPrivateHosts: []string{"127.0.0.1"}}, nil).HTTPClient()
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, firstSrv.URL+"/start", strings.NewReader(payload))
+				if err != nil {
+					t.Fatalf("build request: %v", err)
+				}
+				req.Header = headers()
+				resp, err := hc.Do(req)
+				if err != nil {
+					t.Fatalf("HTTPClient().Do(POST) error = %v", err)
+				}
+				if err := resp.Body.Close(); err != nil {
+					t.Fatalf("close body: %v", err)
+				}
+			}
+
+			second.mu.Lock()
+			defer second.mu.Unlock()
+			if second.hits != 1 {
+				t.Fatalf("second server hits = %d, want 1", second.hits)
+			}
+			if second.method != http.MethodPost {
+				t.Errorf("redirected request method = %q, want POST", second.method)
+			}
+			if got := string(second.body); got != payload {
+				t.Errorf("redirected request body = %q, want %q", got, payload)
+			}
+			if v := second.header.Get("Content-Type"); v != "application/json" {
+				t.Errorf("redirected request Content-Type = %q, want application/json", v)
+			}
+			for _, k := range []string{"Authorization", "X-Api-Key"} {
+				if v := second.header.Get(k); v != "" {
+					t.Errorf("redirected request %s = %q, want it removed", k, v)
+				}
 			}
 		})
 	}

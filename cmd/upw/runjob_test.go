@@ -103,7 +103,7 @@ func TestRun_AllOnceNoTargets(t *testing.T) {
 		t.Errorf("run(%q) = %d, want %d; stderr %q", args, got, want, stderr.String())
 	}
 	want := "ingest: succeeded cloned=0 failed=0 fetched=0 targets=0\n" +
-		"timeline: succeeded commits_walked=0 events_written=0 failed=0 files_excluded=0 files_read=0 files_skipped=0 intervals=0 parse_errors=0 resets=0 skipped=0 targets=0\n"
+		"timeline: succeeded commits_walked=0 deps_dropped=0 events_written=0 failed=0 files_excluded=0 files_read=0 files_skipped=0 intervals=0 parse_errors=0 resets=0 skipped=0 targets=0\n"
 	if got := stdout.String(); got != want {
 		t.Errorf("run(%q) stdout = %q, want %q", args, got, want)
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/store"
@@ -387,5 +389,55 @@ func TestTimeline_DoesNotRunJobs(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Errorf("runs after timeline = %+v, want none", runs)
+	}
+}
+
+func TestTimeline_TextEscapesControlChars(t *testing.T) {
+	t.Parallel()
+	evil := model.Package{PURL: "pkg:pypi/a\x1b[2Jb", Ecosystem: "pypi", Name: "a\x1b[2Jb"}
+	intervals := []model.DepInterval{
+		{ManifestPath: "go.mod", Package: pkgGin, Version: "v1.10.0", Requirement: "v1.10.0", Direct: model.DirectYes,
+			FromSHA: sha1, From: at1},
+		{ManifestPath: "dir\n/requirements.txt", Package: evil, Requirement: ">=1\t\x7f", Direct: model.DirectYes,
+			FromSHA: sha1, From: at1},
+		{ManifestPath: "uv.lock", Package: pkgIdna, Version: "3.7\r", Direct: model.DirectUnknown,
+			FromSHA: sha3, From: at3},
+		{ManifestPath: "go.mod", Package: model.Package{PURL: "pkg:golang/c1\u009b2J", Ecosystem: "golang"}, Version: "v1\xff",
+			Direct: model.DirectYes, FromSHA: sha3, From: at3},
+	}
+
+	var text bytes.Buffer
+	if err := writeTimelineText(&text, intervals); err != nil {
+		t.Fatalf("writeTimelineText() error = %v", err)
+	}
+	want := `PACKAGE                              VERSION        FROM        TO   DIRECT  MANIFEST
+pkg:golang/github.com/gin-gonic/gin  v1.10.0        2026-03-01  now  yes     go.mod
+"pkg:pypi/a\x1b[2Jb"                 "(>=1\t\x7f)"  2026-03-01  now  yes     "dir\n/requirements.txt"
+pkg:pypi/idna                        "3.7\r"        2026-05-10  now  ?       uv.lock
+"pkg:golang/c1\u009b2J"              "v1\xff"       2026-05-10  now  yes     go.mod
+`
+	if got := text.String(); got != want {
+		t.Errorf("writeTimelineText() =\n%s\nwant\n%s", got, want)
+	}
+	if !utf8.ValidString(text.String()) {
+		t.Errorf("writeTimelineText() = %q, want valid UTF-8", text.String())
+	}
+	if strings.ContainsFunc(text.String(), func(r rune) bool { return r != '\n' && unicode.IsControl(r) }) {
+		t.Errorf("writeTimelineText() = %q, want no control character but newlines", text.String())
+	}
+
+	// JSON output keeps the raw values; the encoder escapes them itself.
+	var js bytes.Buffer
+	if err := writeTimelineJSON(&js, intervals[1:2]); err != nil {
+		t.Fatalf("writeTimelineJSON() error = %v", err)
+	}
+	for _, wantPart := range []string{
+		`"package": "pkg:pypi/a\u001b[2Jb"`,
+		`"requirement": ">=1\t` + "\x7f" + `"`,
+		`"manifest": "dir\n/requirements.txt"`,
+	} {
+		if !strings.Contains(js.String(), wantPart) {
+			t.Errorf("writeTimelineJSON() = %s, want it to contain %s", js.String(), wantPart)
+		}
 	}
 }

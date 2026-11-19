@@ -58,6 +58,9 @@ func (c Config) validate() []error {
 		if !slices.Contains([]TargetAuth{"targets", "upstream", "none"}, t.Auth) {
 			add("%s.auth: %q is not one of targets, upstream, none", path, t.Auth)
 		}
+		if err := checkTokenHost(t.Auth, t.URL); err != nil {
+			add("%s.auth: %v", path, err)
+		}
 		for j, p := range t.ExcludePaths {
 			if err := checkExcludePath(p); err != nil {
 				add("%s.exclude_paths[%d]: %v", path, j, err)
@@ -178,6 +181,27 @@ func checkTargetURL(path, raw string) []error {
 		errs = append(errs, fmt.Errorf("%s: must not contain user info; credentials come from auth", path))
 	}
 	return errs
+}
+
+// tokenHost is the only host a GitHub token is sent to.
+const tokenHost = "github.com"
+
+// checkTokenHost rejects a target that would send a GitHub token (auth
+// targets or upstream) to a host other than github.com. A URL that does not
+// parse is left to checkTargetURL. The error names the host only, never the
+// URL, which could carry a credential.
+func checkTokenHost(auth TargetAuth, raw string) error {
+	if auth != "targets" && auth != "upstream" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	if host := u.Hostname(); !strings.EqualFold(host, tokenHost) {
+		return fmt.Errorf("%s sends a GitHub token, so the host must be %s, got %q; use auth none for other hosts", auth, tokenHost, host)
+	}
+	return nil
 }
 
 // checkExcludePath applies the rules for one targets[].exclude_paths entry:

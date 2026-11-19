@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/query"
@@ -94,10 +97,21 @@ func writeTimelineText(w io.Writer, intervals []model.DepInterval) error {
 			to = iv.To.UTC().Format(time.DateOnly)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			iv.Package.PURL, version, iv.From.UTC().Format(time.DateOnly), to, directText(iv.Direct), iv.ManifestPath)
+			terminalSafe(iv.Package.PURL), terminalSafe(version), iv.From.UTC().Format(time.DateOnly), to,
+			directText(iv.Direct), terminalSafe(iv.ManifestPath))
 	}
 	// Write errors on tw are kept by the tabwriter and returned by Flush.
 	return tw.Flush()
+}
+
+// terminalSafe returns s, or its strconv.Quote form when s holds a control
+// character (C0, DEL or C1) or is not valid UTF-8, so repository data cannot
+// move the cursor, clear the screen or break the table's columns.
+func terminalSafe(s string) string {
+	if !utf8.ValidString(s) || strings.ContainsFunc(s, unicode.IsControl) {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // directText is the DIRECT column: yes, no, or ? when unknown.

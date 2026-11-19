@@ -13,13 +13,22 @@ import (
 // jobName is the timeline job's name in config schedules and upw run.
 const jobName = "timeline"
 
-// blobChunkSize caps the refs passed to one ReadBlobs call.
-const blobChunkSize = 500
+// blobChunkSize caps the refs passed to one ReadBlobs call. With gitsrc's
+// per-blob size cap it bounds the file contents held at once.
+const blobChunkSize = 32
+
+// maxDepsPerFile is the most dependencies one parsed file may hold; a file
+// with more is treated as a parse error.
+const maxDepsPerFile = 20_000
+
+// defaultMaxEvents is the most new events one target's run may produce.
+const defaultMaxEvents = 500_000
 
 // statKeys are the counters every run reports, present even when zero.
 var statKeys = []string{
 	"targets", "skipped", "failed", "resets", "commits_walked", "files_read",
 	"events_written", "intervals", "parse_errors", "files_skipped", "files_excluded",
+	"deps_dropped",
 }
 
 // TargetSettings are the timeline settings of one configured target.
@@ -51,6 +60,10 @@ type Service struct {
 	unity      Extractor
 	opts       Options
 	logger     *slog.Logger
+	// maxEvents is the most new events one target's run may produce before
+	// the target fails. NewService sets it to defaultMaxEvents; tests in this
+	// package lower it.
+	maxEvents int
 }
 
 // NewService returns a timeline Service. extractors are offered every
@@ -65,6 +78,7 @@ func NewService(git GitSource, repos RepoStore, store TimelineStore, extractors 
 		unity:      unity,
 		opts:       opts,
 		logger:     logger,
+		maxEvents:  defaultMaxEvents,
 	}
 }
 
@@ -219,21 +233,39 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings) (model.Stat
 				if !handled {
 					continue
 				}
+				if err == nil && len(pm.Dependencies) > maxDepsPerFile {
+					err = fmt.Errorf("%d dependencies, more than the limit of %d", len(pm.Dependencies), maxDepsPerFile)
+				}
 				if err != nil {
+					// Extractor errors can quote file content, which may
+					// hold a credential.
 					s.logger.Warn("timeline manifest parse failed",
-						"repo", t.Slug, "commit", c.SHA, "path", path, "error", err)
+						"repo", t.Slug, "commit", c.SHA, "path", path, "error", model.Redact(err.Error()))
 					st["parse_errors"]++
 					continue
 				}
 				st["files_read"]++
+				deps, dropped := sanitizeDeps(pm.Dependencies)
+				if dropped > 0 {
+					// The dropped values may carry credentials, so only the
+					// path and the count are logged.
+					s.logger.Debug("timeline unsafe dependencies dropped",
+						"repo", t.Slug, "commit", c.SHA, "path", path, "dropped", dropped)
+					st["deps_dropped"] += int64(dropped)
+				}
 				manifests[path] = model.ManifestInfo{Ecosystem: pm.Ecosystem, Kind: pm.Kind}
 				changes = append(changes, manifestChange{
 					Path: path,
-					Deps: filterDeps(pm.Dependencies, t.Ecosystems),
+					Deps: filterDeps(deps, t.Ecosystems),
 				})
 			}
 		}
 		events = append(events, diffCommit(c, state, changes)...)
+		// Checked per commit, so at most one commit's events beyond the limit
+		// are ever held.
+		if len(events) > s.maxEvents {
+			return st, fmt.Errorf("more than %d new events in one run, the per-target limit", s.maxEvents)
+		}
 	}
 
 	all := make([]model.DepEvent, 0, len(stored)+len(events))

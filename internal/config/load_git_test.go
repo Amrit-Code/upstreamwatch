@@ -180,6 +180,58 @@ func TestLoad_ExcludePathsAccepted(t *testing.T) {
 	}
 }
 
+func TestLoad_TokenHost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		auth    string
+		url     string
+		wantErr string // empty: accepted
+	}{
+		{name: "targets on gitlab", auth: "targets", url: "https://gitlab.com/x/y",
+			wantErr: `targets[0].auth: targets sends a GitHub token, so the host must be github.com, got "gitlab.com"; use auth none for other hosts`},
+		{name: "upstream on other host", auth: "upstream", url: "https://git.example.com/example-org/lib",
+			wantErr: `targets[0].auth: upstream sends a GitHub token, so the host must be github.com, got "git.example.com"`},
+		{name: "targets on github subdomain", auth: "targets", url: "https://api.github.com/x/y",
+			wantErr: `got "api.github.com"`},
+		{name: "targets on look-alike host", auth: "targets", url: "https://github.com.example.com/x/y",
+			wantErr: `got "github.com.example.com"`},
+		{name: "targets on github", auth: "targets", url: "https://github.com/x/y"},
+		{name: "upstream on github with port", auth: "upstream", url: "https://github.com:443/x/y"},
+		{name: "none on gitlab", auth: "none", url: "https://gitlab.com/x/y"},
+		{name: "none on any https host", auth: "none", url: "https://git.example.com/example-org/example-server"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yaml := "targets:\n  - slug: app\n    url: " + tt.url + "\n    auth: " + tt.auth + "\n"
+			_, err := loadString(t, yaml, noEnv)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("Load(%q) error = %v, want nil", yaml, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Load(%q) error = %v, want it to contain %q", yaml, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoad_TokenHostSkipsUnparseableURL(t *testing.T) {
+	t.Parallel()
+	// The URL problem is reported once by the URL check, not again as auth.
+	yaml := "targets:\n  - slug: app\n    url: \"https://gitlab.com/%zz\"\n    auth: targets\n"
+	_, err := loadString(t, yaml, noEnv)
+	if err == nil || !strings.Contains(err.Error(), "targets[0].url: invalid URL") {
+		t.Fatalf("Load(%q) error = %v, want the URL error", yaml, err)
+	}
+	if strings.Contains(err.Error(), "targets[0].auth") {
+		t.Errorf("Load(%q) error = %q, want no auth error for an unparseable URL", yaml, err)
+	}
+}
+
 func TestLoad_ExampleDocumentsGitAndPrivateHosts(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "upw.example.yaml"), noEnv)

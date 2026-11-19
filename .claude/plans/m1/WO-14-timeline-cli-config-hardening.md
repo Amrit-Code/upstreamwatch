@@ -70,4 +70,4 @@ Follow the report contract in your agent definition: full report to the report f
 
 ## Rulings
 
-None.
+2026-11-19: `cmd/upw/runjob_test.go` is added to the owned files for the timeline stats expected-output line only (insert `deps_dropped=0` in sorted position). Keep `deps_dropped` emitted when zero, like every other key.

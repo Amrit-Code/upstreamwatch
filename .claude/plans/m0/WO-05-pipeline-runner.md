@@ -116,3 +116,4 @@ Follow the report contract in your agent definition: full report to the report f
 ## Rulings
 
 - 2026-11-19: One `job_failure` finding per job, keyed `job_failure|<job>`. A repeated failure updates it; the next successful run resolves it. The `findings` table has no run column, so the failing run is identified through `rank_reason` and the `runs` table.
+- 2026-11-19 (fix round 1, Astra finding WO05-001): Requirement 9 holds even when the job returns nil. If `ctx` is cancelled or past its deadline when `Job.Run` returns, and the job returned a nil error, the Runner treats the run as failed with `ctx.Err()` as the job error: status `model.RunFailed`, the context error's text, `UpsertFinding` raised, `ResolveFinding` not called, and the returned error satisfies `errors.Is` for the context error. A job that returns its own non-nil error keeps that error.

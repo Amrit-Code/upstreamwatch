@@ -62,17 +62,21 @@ func (db *DB) SaveHTTPValidator(ctx context.Context, v model.HTTPValidator) erro
 	if v.URL == "" {
 		return errors.New("save http validator: empty url")
 	}
-	if _, err := db.q.ExecContext(ctx,
-		`INSERT INTO http_cache (`+httpValidatorColumns+`, updated_ts)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT (url) DO UPDATE SET
-			etag = excluded.etag,
-			last_modified = excluded.last_modified,
-			fetched_ts = excluded.fetched_ts,
-			status = excluded.status,
-			updated_ts = excluded.updated_ts`,
-		v.URL, nullText(v.ETag), nullText(v.LastModified), formatTime(v.FetchedAt), v.Status,
-		formatTime(db.now())); err != nil {
+	err := db.write(ctx, func() error {
+		_, err := db.q.ExecContext(ctx,
+			`INSERT INTO http_cache (`+httpValidatorColumns+`, updated_ts)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (url) DO UPDATE SET
+				etag = excluded.etag,
+				last_modified = excluded.last_modified,
+				fetched_ts = excluded.fetched_ts,
+				status = excluded.status,
+				updated_ts = excluded.updated_ts`,
+			v.URL, nullText(v.ETag), nullText(v.LastModified), formatTime(v.FetchedAt), v.Status,
+			formatTime(db.now()))
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("save http validator for host %q: %w", urlHost(v.URL), err)
 	}
 	return nil

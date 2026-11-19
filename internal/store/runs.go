@@ -66,10 +66,12 @@ func decodeStats(s string) (model.Stats, error) {
 func (db *DB) StartRun(ctx context.Context, job string, startedAt time.Time) (model.Run, error) {
 	now := formatTime(db.now())
 	var id int64
-	err := db.q.QueryRowContext(ctx,
-		`INSERT INTO runs (job, started_ts, status, stats, error, created_ts, updated_ts)
-		 VALUES (?, ?, ?, '{}', '', ?, ?) RETURNING id`,
-		job, formatTime(startedAt), string(model.RunRunning), now, now).Scan(&id)
+	err := db.write(ctx, func() error {
+		return db.q.QueryRowContext(ctx,
+			`INSERT INTO runs (job, started_ts, status, stats, error, created_ts, updated_ts)
+			 VALUES (?, ?, ?, '{}', '', ?, ?) RETURNING id`,
+			job, formatTime(startedAt), string(model.RunRunning), now, now).Scan(&id)
+	})
 	if err != nil {
 		return model.Run{}, fmt.Errorf("start run %q: %w", job, err)
 	}
@@ -88,13 +90,17 @@ func (db *DB) FinishRun(ctx context.Context, run model.Run) error {
 	if err != nil {
 		return fmt.Errorf("finish run %d: encode stats: %w", run.ID, err)
 	}
-	res, err := db.q.ExecContext(ctx,
-		`UPDATE runs SET finished_ts = ?, status = ?, stats = ?, error = ?, updated_ts = ? WHERE id = ?`,
-		formatTime(run.FinishedAt), string(run.Status), stats, run.Error, formatTime(db.now()), run.ID)
-	if err != nil {
-		return fmt.Errorf("finish run %d: %w", run.ID, err)
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err = db.write(ctx, func() error {
+		res, err := db.q.ExecContext(ctx,
+			`UPDATE runs SET finished_ts = ?, status = ?, stats = ?, error = ?, updated_ts = ? WHERE id = ?`,
+			formatTime(run.FinishedAt), string(run.Status), stats, run.Error, formatTime(db.now()), run.ID)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("finish run %d: %w", run.ID, err)
 	}

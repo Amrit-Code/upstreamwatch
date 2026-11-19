@@ -960,7 +960,25 @@ func TestDB_ClosedReturnsErrors(t *testing.T) {
 		},
 		"ResolveFinding":   func() error { return db.ResolveFinding(ctx, "fp", t0) },
 		"ListOpenFindings": func() error { _, err := db.ListOpenFindings(ctx); return err },
-		"InTx":             func() error { return db.InTx(ctx, func(*DB) error { return nil }) },
+		"ListFindings": func() error {
+			_, err := db.ListFindings(ctx, model.FindingFilter{Now: t0})
+			return err
+		},
+		"ListUnresolvedFindings": func() error { _, err := db.ListUnresolvedFindings(ctx, model.KindAdvisory); return err },
+		"GetFinding":             func() error { _, err := db.GetFinding(ctx, 1); return err },
+		"SaveFindingState": func() error {
+			return db.SaveFindingState(ctx, 1, model.FindingState{State: model.StateAcked})
+		},
+		"MarkReported": func() error { return db.MarkReported(ctx, []int64{1}, t0) },
+		"SaveDigest": func() error {
+			_, err := db.SaveDigest(ctx, model.DigestRecord{Channel: "stdout", Status: model.DigestSent, SentAt: t0})
+			return err
+		},
+		"FailedDigests":     func() error { _, err := db.FailedDigests(ctx); return err },
+		"MarkDigestRetried": func() error { return db.MarkDigestRetried(ctx, 1) },
+		"LastSentDigest":    func() error { _, err := db.LastSentDigest(ctx); return err },
+		"BackupTo":          func() error { return db.BackupTo(ctx, filepath.Join(t.TempDir(), "backup.sqlite")) },
+		"InTx":              func() error { return db.InTx(ctx, func(*DB) error { return nil }) },
 	} {
 		if err := call(); err == nil {
 			t.Errorf("%s after Close() error = nil, want an error", name)

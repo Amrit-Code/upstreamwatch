@@ -40,14 +40,19 @@ func scanRepo(s scanner) (model.TargetRepo, error) {
 // updates only its URL after that. It returns the stored repo with its ID set.
 func (db *DB) UpsertRepo(ctx context.Context, slug, url string) (model.TargetRepo, error) {
 	now := formatTime(db.now())
-	r, err := scanRepo(db.q.QueryRowContext(ctx,
-		`INSERT INTO repos (slug, url, created_ts, updated_ts)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT (slug) DO UPDATE SET
-			url = excluded.url,
-			updated_ts = excluded.updated_ts
-		 RETURNING `+repoColumns,
-		slug, nullText(url), now, now))
+	var r model.TargetRepo
+	err := db.write(ctx, func() error {
+		var err error
+		r, err = scanRepo(db.q.QueryRowContext(ctx,
+			`INSERT INTO repos (slug, url, created_ts, updated_ts)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT (slug) DO UPDATE SET
+				url = excluded.url,
+				updated_ts = excluded.updated_ts
+			 RETURNING `+repoColumns,
+			slug, nullText(url), now, now))
+		return err
+	})
 	if err != nil {
 		return model.TargetRepo{}, fmt.Errorf("upsert repo %q: %w", slug, err)
 	}
@@ -59,26 +64,30 @@ func (db *DB) UpsertRepo(ctx context.Context, slug, url string) (model.TargetRep
 // branch and clone path only when the attempt succeeded. An unknown repo ID is
 // an error wrapping model.ErrNotFound.
 func (db *DB) RecordFetch(ctx context.Context, r model.FetchResult) error {
-	var (
-		res sql.Result
-		err error
-	)
-	if r.Error == "" {
-		res, err = db.q.ExecContext(ctx,
-			`UPDATE repos SET last_fetch_ts = ?, last_fetch_error = NULL,
-				default_branch = ?, clone_path = ?, updated_ts = ?
-			 WHERE id = ?`,
-			formatTime(r.At), nullText(r.Branch), nullText(r.ClonePath), formatTime(db.now()), r.RepoID)
-	} else {
-		res, err = db.q.ExecContext(ctx,
-			`UPDATE repos SET last_fetch_ts = ?, last_fetch_error = ?, updated_ts = ?
-			 WHERE id = ?`,
-			formatTime(r.At), r.Error, formatTime(db.now()), r.RepoID)
-	}
-	if err != nil {
-		return fmt.Errorf("record fetch of repo %d: %w", r.RepoID, err)
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := db.write(ctx, func() error {
+		var (
+			res sql.Result
+			err error
+		)
+		if r.Error == "" {
+			res, err = db.q.ExecContext(ctx,
+				`UPDATE repos SET last_fetch_ts = ?, last_fetch_error = NULL,
+					default_branch = ?, clone_path = ?, updated_ts = ?
+				 WHERE id = ?`,
+				formatTime(r.At), nullText(r.Branch), nullText(r.ClonePath), formatTime(db.now()), r.RepoID)
+		} else {
+			res, err = db.q.ExecContext(ctx,
+				`UPDATE repos SET last_fetch_ts = ?, last_fetch_error = ?, updated_ts = ?
+				 WHERE id = ?`,
+				formatTime(r.At), r.Error, formatTime(db.now()), r.RepoID)
+		}
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("record fetch of repo %d: %w", r.RepoID, err)
 	}

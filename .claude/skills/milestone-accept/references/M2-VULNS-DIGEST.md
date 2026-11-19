@@ -29,4 +29,6 @@ Conventions: run from the repository root on the Mac unless Who says VM. `upw` i
 | 21 | Digest arrives | on the VM with the owner's SMTP settings in `.env`: `docker compose exec upw upw run digest` | the digest arrives in the owner's inbox and its links open the tailnet UI | owner (VM, SMTP) | open | |
 | 22 | Ack on the real instance | owner acks a finding on the tailnet UI; next scheduled digest | the acked finding is not in it | owner (VM) | open | |
 
+Carried from M1 (2026-11-19, WO-16 review): single-statement store writes outside `InTx` (`StartRun`, `FinishRun`, `UpsertRepo`, `RecordFetch`, `SaveHTTPValidator`, `ResolveFinding`) do not take the in-process write queue, so a long `ApplyTimeline` can make one of them wait up to the 5 s busy timeout and fail with SQLITE_BUSY. M2 adds web writes (ack, snooze, dismiss) beside the scheduler, so an M2 work order routes every store write through the queue, with a test where a write meets a long transaction.
+
 Security review: open.

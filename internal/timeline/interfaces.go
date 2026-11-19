@@ -56,6 +56,7 @@ type TimelineStore interface {
 	// and packages, inserts u.Events, replaces the repo's intervals with
 	// u.Intervals while keeping the row ID of every interval whose manifest,
 	// package and opening commit are unchanged, and sets the repo's last
-	// indexed commit to u.IndexedSHA.
+	// indexed commit to u.IndexedSHA and its timeline settings fingerprint to
+	// u.Settings.
 	ApplyTimeline(ctx context.Context, u model.TimelineUpdate) error
 }

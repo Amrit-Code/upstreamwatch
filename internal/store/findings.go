@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -69,10 +72,12 @@ func scanFinding(s scanner) (model.Finding, error) {
 // UpsertFinding inserts f, keyed by f.Fingerprint, with first-seen and
 // last-changed times taken from f.LastChangedAt and a finding_state row in
 // state open. If the fingerprint exists it updates the dep_version link (so a
-// finding whose interval was deleted is relinked), score, rank reason and
-// last-changed time, clears the resolved time, and leaves the other links, the
-// first-seen time, the digest time and the state row alone. Zero ID fields are
-// stored as NULL.
+// finding whose interval was deleted is relinked), score and rank reason, and
+// clears the resolved time. The last-changed time moves to f.LastChangedAt
+// only when the stored score or rank reason differs from f's or the finding
+// was resolved; otherwise it is kept, so a finding a job sees again unchanged
+// does not count as changed. The other links, the first-seen time, the digest
+// time and the state row are left alone. Zero ID fields are stored as NULL.
 // It returns the stored finding with its state.
 func (db *DB) UpsertFinding(ctx context.Context, f model.Finding) (model.Finding, error) {
 	var stored model.Finding
@@ -89,7 +94,15 @@ func (db *DB) UpsertFinding(ctx context.Context, f model.Finding) (model.Finding
 				dep_version_id = excluded.dep_version_id,
 				score = excluded.score,
 				rank_reason = excluded.rank_reason,
-				last_changed_ts = excluded.last_changed_ts,
+				-- Every expression on the right reads the row as it was before
+				-- this update, so the comparison sees the stored values.
+				last_changed_ts = CASE
+					WHEN findings.score <> excluded.score
+						OR findings.rank_reason <> excluded.rank_reason
+						OR findings.resolved_ts IS NOT NULL
+					THEN excluded.last_changed_ts
+					ELSE findings.last_changed_ts
+				END,
 				resolved_ts = NULL,
 				updated_ts = excluded.updated_ts
 			 RETURNING id`,
@@ -128,19 +141,45 @@ func (db *DB) UpsertFinding(ctx context.Context, f model.Finding) (model.Finding
 // not an error if there is none.
 func (db *DB) ResolveFinding(ctx context.Context, fingerprint string, at time.Time) error {
 	ts := formatTime(at)
-	if _, err := db.q.ExecContext(ctx,
-		`UPDATE findings SET resolved_ts = ?, last_changed_ts = ?, updated_ts = ?
-		 WHERE fingerprint = ? AND resolved_ts IS NULL`,
-		ts, ts, formatTime(db.now()), fingerprint); err != nil {
+	err := db.write(ctx, func() error {
+		_, err := db.q.ExecContext(ctx,
+			`UPDATE findings SET resolved_ts = ?, last_changed_ts = ?, updated_ts = ?
+			 WHERE fingerprint = ? AND resolved_ts IS NULL`,
+			ts, ts, formatTime(db.now()), fingerprint)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("resolve finding %q: %w", fingerprint, err)
 	}
 	return nil
 }
 
+// queryFindings runs a SELECT of findingColumns and scans every row. It
+// returns nil when there are none.
+func (db *DB) queryFindings(ctx context.Context, query string, args ...any) ([]model.Finding, error) {
+	rows, err := db.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var findings []model.Finding
+	for rows.Next() {
+		f, err := scanFinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return findings, nil
+}
+
 // ListOpenFindings returns unresolved findings whose state is open or acked,
 // highest score first, then lowest ID. It returns nil when there are none.
 func (db *DB) ListOpenFindings(ctx context.Context) ([]model.Finding, error) {
-	rows, err := db.q.QueryContext(ctx,
+	findings, err := db.queryFindings(ctx,
 		`SELECT `+findingColumns+`
 		 FROM findings f JOIN finding_state s ON s.finding_id = f.id
 		 WHERE f.resolved_ts IS NULL AND s.state IN (?, ?)
@@ -149,17 +188,133 @@ func (db *DB) ListOpenFindings(ctx context.Context) ([]model.Finding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list open findings: %w", err)
 	}
-	defer rows.Close()
-	var findings []model.Finding
-	for rows.Next() {
-		f, err := scanFinding(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list open findings: %w", err)
-		}
-		findings = append(findings, f)
+	return findings, nil
+}
+
+// ListFindings returns the unresolved findings that pass flt, highest score
+// first, then lowest ID, each with its stored state. The filter uses the
+// effective state: a snoozed finding whose snooze ends at or before flt.Now
+// counts as open. Without flt.Suppressed only findings whose effective state
+// is open or acked are returned; with it every unresolved finding is. A
+// non-zero flt.RepoID or a non-empty flt.Kind narrows the list. A zero
+// flt.Now is an error. It returns nil when nothing passes.
+func (db *DB) ListFindings(ctx context.Context, flt model.FindingFilter) ([]model.Finding, error) {
+	if flt.Now.IsZero() {
+		return nil, errors.New("list findings: filter has no current time")
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list open findings: %w", err)
+	suppressed := 0
+	if flt.Suppressed {
+		suppressed = 1
+	}
+	// A NULL snooze end is the zero time, which is before any flt.Now.
+	findings, err := db.queryFindings(ctx,
+		`SELECT `+findingColumns+`
+		 FROM findings f JOIN finding_state s ON s.finding_id = f.id
+		 WHERE f.resolved_ts IS NULL
+		   AND (? = 1 OR s.state IN (?, ?)
+		        OR (s.state = ? AND (s.snooze_until_ts IS NULL OR s.snooze_until_ts <= ?)))
+		   AND (? = 0 OR f.repo_id = ?)
+		   AND (? = '' OR f.kind = ?)
+		 ORDER BY f.score DESC, f.id ASC`,
+		suppressed, string(model.StateOpen), string(model.StateAcked),
+		string(model.StateSnoozed), formatTime(flt.Now),
+		flt.RepoID, flt.RepoID, string(flt.Kind), string(flt.Kind))
+	if err != nil {
+		return nil, fmt.Errorf("list findings: %w", err)
 	}
 	return findings, nil
+}
+
+// ListUnresolvedFindings returns every unresolved finding of kind, in any
+// operator state, ordered by ID. It returns nil when there are none.
+func (db *DB) ListUnresolvedFindings(ctx context.Context, kind model.FindingKind) ([]model.Finding, error) {
+	findings, err := db.queryFindings(ctx,
+		`SELECT `+findingColumns+`
+		 FROM findings f JOIN finding_state s ON s.finding_id = f.id
+		 WHERE f.resolved_ts IS NULL AND f.kind = ?
+		 ORDER BY f.id ASC`,
+		string(kind))
+	if err != nil {
+		return nil, fmt.Errorf("list unresolved %s findings: %w", kind, err)
+	}
+	return findings, nil
+}
+
+// GetFinding returns the finding with this ID and its state, or an error
+// wrapping model.ErrNotFound.
+func (db *DB) GetFinding(ctx context.Context, id int64) (model.Finding, error) {
+	f, err := scanFinding(db.q.QueryRowContext(ctx,
+		`SELECT `+findingColumns+`
+		 FROM findings f JOIN finding_state s ON s.finding_id = f.id
+		 WHERE f.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Finding{}, fmt.Errorf("finding %d: %w", id, model.ErrNotFound)
+	}
+	if err != nil {
+		return model.Finding{}, fmt.Errorf("get finding %d: %w", id, err)
+	}
+	return f, nil
+}
+
+// SaveFindingState replaces the operator state of the finding with this ID
+// with st: state, snooze end (NULL when zero), note (NULL when empty), change
+// time (NULL when zero) and who changed it (NULL when empty). It does not
+// check that the move is allowed; model.Transition does. An unknown ID is an
+// error wrapping model.ErrNotFound.
+func (db *DB) SaveFindingState(ctx context.Context, id int64, st model.FindingState) error {
+	var n int64
+	err := db.write(ctx, func() error {
+		res, err := db.q.ExecContext(ctx,
+			`UPDATE finding_state SET state = ?, snooze_until_ts = ?, note = ?,
+				changed_ts = ?, changed_by = ?, updated_ts = ?
+			 WHERE finding_id = ?`,
+			string(st.State), formatTime(st.SnoozeUntil), nullText(st.Note),
+			formatTime(st.ChangedAt), nullText(st.ChangedBy), formatTime(db.now()), id)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("save state of finding %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("save state of finding %d: %w", id, model.ErrNotFound)
+	}
+	return nil
+}
+
+// markReportedChunk is the most IDs bound in one UPDATE ... IN (...).
+const markReportedChunk = 500
+
+// MarkReported sets the digest time of the findings with these IDs to at,
+// leaving their last-changed time alone. IDs with no finding are skipped. An
+// empty ids is a no-op. One transaction, however many IDs.
+func (db *DB) MarkReported(ctx context.Context, ids []int64, at time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	err := db.InTx(ctx, func(tx *DB) error {
+		now := formatTime(tx.now())
+		reported := formatTime(at)
+		for chunk := range slices.Chunk(ids, markReportedChunk) {
+			args := make([]any, 0, len(chunk)+2)
+			args = append(args, reported, now)
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			placeholders := strings.Repeat("?, ", len(chunk)-1) + "?"
+			if _, err := tx.q.ExecContext(ctx,
+				`UPDATE findings SET reported_in_digest_ts = ?, updated_ts = ?
+				 WHERE id IN (`+placeholders+`)`, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("mark %d findings reported: %w", len(ids), err)
+	}
+	return nil
 }

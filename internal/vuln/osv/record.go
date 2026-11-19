@@ -224,8 +224,9 @@ func scoreLabel(score float64) model.SeverityLabel {
 
 // toPackage maps an OSV ecosystem and package name to upstreamwatch's
 // package. It reports false for an ecosystem with no package URL type in
-// model.OSVEcosystem (Debian, Alpine and so on) and for an empty name. An
-// ecosystem suffix such as ":12" in "Debian:12" is ignored.
+// model.OSVEcosystem (Debian, Alpine and so on), for an empty name, and for a
+// Maven name that is not "<group>:<artifact>". An ecosystem suffix such as
+// ":12" in "Debian:12" is ignored.
 func toPackage(ecosystem, name string) (model.Package, bool) {
 	eco, _, _ := strings.Cut(ecosystem, ":")
 	typ, ok := purlTypeOf(eco)
@@ -249,6 +250,13 @@ func toPackage(ecosystem, name string) (model.Package, bool) {
 			purlName = "%40" + rest
 		}
 		return model.Package{PURL: "pkg:npm/" + purlName, Ecosystem: typ, Name: name}, true
+	case "maven":
+		group, artifact, ok := strings.Cut(name, ":")
+		if !ok || group == "" || artifact == "" || strings.Contains(artifact, ":") {
+			return model.Package{}, false
+		}
+		path := group + "/" + artifact
+		return model.Package{PURL: "pkg:maven/" + path, Ecosystem: typ, Name: path}, true
 	}
 	return model.Package{PURL: "pkg:" + typ + "/" + name, Ecosystem: typ, Name: name}, true
 }

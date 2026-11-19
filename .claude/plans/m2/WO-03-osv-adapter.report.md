@@ -106,3 +106,44 @@ Outside scope:
 Concerns:
 - The Maven mapping above would be wrong if a Maven parser is added; the reviewer may want a ruling now.
 - The `purlTypes` list duplicates the set of types in model's table (not the OSV names); TestPurlTypes_AllKnownToModel catches a type removed from model but not one added.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-03-osv-adapter.md (plus the lead's Maven ruling, which overrides requirements 1 and 5 for Maven)
+Files changed:
+- internal/vuln/osv/query.go (modified: toQuery sends a Maven package URL pkg:maven/<group>/<artifact> as OSV name "<group>:<artifact>", splitting the decoded path at its last "/"; no group or no artifact is skipped)
+- internal/vuln/osv/record.go (modified: toPackage maps OSV Maven "<group>:<artifact>" to pkg:maven/<group>/<artifact>; a name without ":", with an empty group or artifact, or with a second ":" is dropped)
+- internal/vuln/osv/query_internal_test.go (modified: 4 Maven rows in TestToQuery: two mapped, including a percent-encoded artifact, two skipped)
+- internal/vuln/osv/record_internal_test.go (modified: 5 Maven rows in TestToPackage: one mapped, four dropped)
+Commands run:
+- `go test -race -count=1 ./internal/vuln/osv/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	1.268s
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/vuln	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	1.164s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+  make check exit 0
+  (every other package printed ok or [no test files])
+- `git status --porcelain` -> exit 0 (before this section was appended)
+   M internal/vuln/osv/query.go
+   M internal/vuln/osv/query_internal_test.go
+   M internal/vuln/osv/record.go
+   M internal/vuln/osv/record_internal_test.go
+Decisions:
+- Maven Name follows the convention used for every other ecosystem, the decoded name part of the produced package URL: Name = "<group>/<artifact>" (for example "org.apache.tomcat/tomcat-coyote"), not "<artifact>" alone.
+- An OSV Maven name with a second ":" (such as "g:a:jar") is dropped, since it is not "<group>:<artifact>".
+- On the query side the decoded path is split at its last "/", so the group keeps its dots and the artifact is the final segment.
+Outside scope: none new. The Maven point from round 1 is resolved; the rest stand as you ruled.

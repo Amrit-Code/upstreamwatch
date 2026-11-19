@@ -55,7 +55,8 @@ type batchResult struct {
 
 // toQuery maps a package version to an OSV query. It reports false for a
 // pair OSV cannot be asked about: a package type with no OSV ecosystem, an
-// empty version, or a package URL whose name does not decode.
+// empty version, a package URL whose name does not decode, or a Maven package
+// URL without both a group and an artifact.
 func toQuery(pv model.PackageVersion) (osvQuery, bool) {
 	eco, ok := model.OSVEcosystem(pv.PURL)
 	if !ok || pv.Version == "" {
@@ -65,6 +66,14 @@ func toQuery(pv model.PackageVersion) (osvQuery, bool) {
 	name, err := url.PathUnescape(rest)
 	if err != nil || name == "" {
 		return osvQuery{}, false
+	}
+	if model.PURLType(pv.PURL) == "maven" {
+		// pkg:maven/<group>/<artifact> is "<group>:<artifact>" in OSV.
+		i := strings.LastIndexByte(name, '/')
+		if i <= 0 || i == len(name)-1 {
+			return osvQuery{}, false
+		}
+		name = name[:i] + ":" + name[i+1:]
 	}
 	version := pv.Version
 	toolchain := pv.PURL == toolchainPURL

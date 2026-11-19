@@ -1,0 +1,11 @@
+upstreamwatch — 2026-07-14 — 1 new, 0 changed, 2 waiting for LLM budget
+
+NEW
+[A] high  GO-2026-4866  pkg:golang/toolchain 1.26.0  (repo: server)
+     net/http: request smuggling via chunked encoding. Fixed in 1.26.4. KEV: no. EPSS p71.
+     Exposed since 2026-05-14 (go.mod) — confidence high
+     https://upstreamwatch.example.ts.net/f/1842
+
+WAITING  2 issue candidates over today's LLM budget.
+Last runs: none.
+Open: 11, acked: 4, snoozed: 2.  https://upstreamwatch.example.ts.net/

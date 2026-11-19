@@ -73,3 +73,4 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-19 (lead), on the BLOCKED report: requirement 5's body excerpt is dropped. `httpx.StatusError` carries no body by design, and response bodies stay out of error text. Errors read `<kind>: post to <host>: status <n>`.

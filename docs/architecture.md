@@ -186,7 +186,7 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | `GET /health` | last runs, JSON |
 | `GET /static/style.css` | the embedded stylesheet |
 
-After M0 the server answers `GET /`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first, through `internal/query`. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set.
+After M0 the server answers `GET /`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first, through `internal/query`. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set. A host check answers 421 to a request whose `Host` header is not the listen address, a loopback name (`localhost`, `127.0.0.1`, `::1`, the only names answered when the listen host is unspecified, such as `0.0.0.0`) or the host of `http.base_url`; it stops a DNS-rebinding page from reaching the UI. A `http.base_url` with an empty hostname is rejected by config validation and by the server. On shutdown, requests still running after ten seconds have their connections closed.
 
 The settings page never shows the stored key. It shows the last four characters only.
 
@@ -215,7 +215,7 @@ Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debu
 | 08:00 daily | `digest`: `0 8 * * *` | digest |
 | 03:30 daily | `backup`: `30 3 * * *` | backup |
 
-Each schedule is a five-field cron expression (minute, hour, day of month, month, day of week) evaluated in the process's local time zone, so the compose file sets `TZ`. Seconds fields, descriptors such as `@daily` and a `TZ=` or `CRON_TZ=` prefix are rejected. Defaults are set in `internal/config` and shown in `deploy/upw.example.yaml`. A schedule runs its jobs one after another through the Runner; one job's failure is logged and the next job still runs. A tick is skipped, with a warning, while the previous run of the same schedule is still going. `notify.heartbeat` (default `0 8 * * 1`, weekly) is a config key for the "all quiet" message; the scheduler does not run it yet.
+Each schedule is a five-field cron expression (minute, hour, day of month, month, day of week) evaluated in the process's local time zone, so the compose file sets `TZ`. Seconds fields, descriptors such as `@daily` and a `TZ=` or `CRON_TZ=` prefix are rejected. Defaults are set in `internal/config` and shown in `deploy/upw.example.yaml`. A schedule runs its jobs one after another through the Runner; one job's failure is logged and the next job still runs. A tick is skipped, with a warning, while the previous run of the same schedule is still going. Once `Scheduler.Stop` is called no chain starts and a running chain starts no further job; Stop returns nil when no chain is running, and an error only if its context ends while one still is. `notify.heartbeat` (default `0 8 * * 1`, weekly) is a config key for the "all quiet" message; the scheduler does not run it yet.
 
 ## Two requests, followed end to end
 
@@ -291,4 +291,4 @@ sequenceDiagram
   R->>S: RunStore.Finish
 ```
 
-A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly. A job that panics is recorded the same way, with an error starting `panic: `. There is one job_failure finding per job, with fingerprint `job_failure|<job>`; a repeat failure refreshes it, and the next successful run of that job resolves it.
+A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly. A job that panics is recorded the same way, with an error starting `panic: `. A run whose context was cancelled or past its deadline when the job returned is recorded as failed even if the job returned no error; the error is the context's. There is one job_failure finding per job, with fingerprint `job_failure|<job>`; a repeat failure refreshes it, and the next successful run of that job resolves it.

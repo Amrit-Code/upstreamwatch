@@ -550,7 +550,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | advisory_id | one of advisory_id and issue_id is set |
 | issue_id | |
 | verdict_id | |
-| fingerprint | unique; kind, repo, package, and the advisory or issue (`kind\|repo\|package\|advisory_or_issue` in the plan). A `job_failure` finding has none of those, so its fingerprint is `job_failure\|<job>`: one finding per job |
+| fingerprint | unique; kind, repo, package, and the advisory or issue (`kind\|repo\|package\|advisory_or_issue` in the plan). A `job_failure` finding has none of those, so its fingerprint is `job_failure\|<job>`: one finding per job. A repeat upsert of the same fingerprint relinks `dep_version_id`, since a reindex sets it to NULL when it deletes the interval |
 | score | |
 | rank_reason | |
 | first_seen_ts | |

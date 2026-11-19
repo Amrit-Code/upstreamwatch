@@ -29,12 +29,12 @@ Several notifiers can be enabled at once. A failure in one does not stop the oth
 
 Every HTTP adapter sends its requests through `internal/httpx` (the email notifier, which speaks SMTP, is the exception). One client means one place for these rules, which come from `internal/httpx`:
 
-- Only `https` URLs, with no userinfo and a host. At most five redirects, each checked against the same rules. No proxy.
+- Only `https` URLs, with no userinfo and a host. At most five redirects, each checked against the same rules. Once a redirect chain has left the first request's host, every later hop (even one back to it) is sent with only `User-Agent`, `Accept`, `Accept-Encoding` and `Accept-Language`, so credentials and validators are not forwarded, cookie-jar cookies included. No proxy.
 - A connection is refused, after the hostname is resolved, when the address is loopback, private, link-local, multicast or unspecified, or lies in the shared address space `100.64.0.0/10` (where tailnet addresses live), "this network" `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`, the IPv4 and IPv6 documentation ranges, local-use NAT64 `64:ff9b:1::/48` or Teredo `2001::/32`. For NAT64 `64:ff9b::/96` and 6to4 `2002::/16` the embedded IPv4 address is judged by the same rules.
 - A host the operator names in the client's `AllowPrivateHosts` option is exempt from the address check and may use `http`. Nothing in production code sets it; tests use it to reach a local fake server.
 - Defaults: a two-minute timeout per request, a 64 MiB response body cap, three attempts for a GET or HEAD, a 30-second longest wait between attempts, and a 100 ms gap between requests to `api.github.com`. Other methods are sent once. A server asking for a longer wait than the maximum (`Retry-After` or the rate-limit reset header) ends the request with a rate-limit error that carries the reset time.
 - Errors name the method, host and path, never the query string; a request marked `SecretPath` (webhooks) names the host only.
-- Conditional requests use `ETag` and `Last-Modified`. The client either keeps them itself in the `http_cache` table, keyed by exact URL, or leaves them to the caller, which passes the ETag in and stores the one that comes back.
+- Conditional requests use `ETag` and `Last-Modified`. The client either keeps them itself in the `http_cache` table, keyed by exact URL, or leaves them to the caller, which passes the ETag in and stores the one that comes back. A 304 counts as an answer to a conditional request only when the request that got it, after redirects, carried a validator.
 
 ## What `upw doctor` probes
 

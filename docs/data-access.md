@@ -80,7 +80,7 @@ Each interface a service uses is declared in that service's package, so the sets
 ## Rules
 
 - Writes that must land together, such as the issues page and its cursor, go through `store.DB.InTx`, which hands the service the same interfaces bound to a transaction. `InTx` opens an `IMMEDIATE` write transaction, commits when the function returns nil and rolls back on an error or panic; called inside a transaction it joins it. `store.Bind` adapts `InTx` to a consumer-declared interface, so a service can run its own interface in a transaction without importing the store.
-- `store.Open` sets WAL, a five-second busy timeout and foreign keys on, and refuses to continue if the pragmas did not take. It creates the database file with mode 0600 and a missing directory with mode 0700.
+- `store.Open` sets WAL, a five-second busy timeout and foreign keys on, and refuses to continue if the pragmas did not take. It creates the database file with mode 0600 and a missing directory with mode 0700; an existing data directory that group or others can access is set to 0700, and `Open` fails if it cannot be.
 - The scheduler is the single writer for pipeline tables. The web server writes only finding state, eval labels and settings. SQLite runs in WAL mode so page loads never wait on a job.
 - Store methods take and return domain objects (see [domain-model.md](domain-model.md)), never rows or `sql.Null*` types.
 - Migrations are numbered SQL files embedded in the binary and applied at startup, each in its own transaction with its `schema_migrations` row. They are forward-only and additive until 1.0. The binary refuses to start on a database newer than itself, and on one whose applied migration file has since been edited (the stored checksum differs).

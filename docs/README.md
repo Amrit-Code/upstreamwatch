@@ -13,4 +13,4 @@ These docs describe how upstreamwatch is designed and built. Start with architec
 
 The docs are kept current by the `docs-sync` skill.
 
-Last synced: 2f5ba3a (2026-11-19)
+Last synced: 69911fe (2026-11-19)

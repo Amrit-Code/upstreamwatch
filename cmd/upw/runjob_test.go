@@ -20,7 +20,7 @@ func TestRun_UnknownJob(t *testing.T) {
 	if got, want := run(t.Context(), args, &stdout, &stderr, noEnv), 1; got != want {
 		t.Errorf("run(%q) = %d, want %d", args, got, want)
 	}
-	want := "upw: unknown job \"bogus\"; known jobs: ingest, timeline\n"
+	want := "upw: unknown job \"bogus\"; known jobs: ingest, timeline, vulns, digest, backup\n"
 	if got := stderr.String(); !strings.HasSuffix(got, want) {
 		t.Errorf("run(%q) stderr = %q, want it to end with %q", args, got, want)
 	}
@@ -107,9 +107,32 @@ func TestRun_AllOnceNoTargets(t *testing.T) {
 		t.Errorf("run(%q) = %d, want %d; stderr %q", args, got, want, stderr.String())
 	}
 	want := "ingest: succeeded cloned=0 failed=0 fetched=0 targets=0\n" +
-		"timeline: succeeded commits_walked=0 deps_dropped=0 events_written=0 failed=0 files_excluded=0 files_read=0 files_skipped=0 intervals=0 parse_errors=0 resets=0 skipped=0 targets=0\n"
+		"timeline: succeeded commits_walked=0 deps_dropped=0 events_written=0 failed=0 files_excluded=0 files_read=0 files_skipped=0 intervals=0 parse_errors=0 resets=0 skipped=0 targets=0\n" +
+		"vulns: succeeded advisories_saved=0 delta_irrelevant=0 delta_refs=0 epss_errors=0 epss_updated=0 fetch_not_found=0 fetched=0 findings_resolved=0 findings_upserted=0 intervals=0 kev_errors=0 kev_updated=0 matches=0 matches_open=0 pairs_new=0 query_refs=0 unversioned=0\n" +
+		"digest: succeeded changed=0 failed=0 heartbeat=0 more=0 new=0 no_channels=1 retried=0 sent=0 skipped=0\n" +
+		"backup: succeeded deleted=0 exists=0 written=1\n"
 	if got := stdout.String(); got != want {
 		t.Errorf("run(%q) stdout = %q, want %q", args, got, want)
+	}
+}
+
+func TestRun_VulnsUsesLocalSources(t *testing.T) {
+	t.Parallel()
+	cfg := writeConfig(t, "")
+	var stdout, stderr bytes.Buffer
+	args := []string{"run", "vulns", "-config", cfg}
+	if got, want := run(t.Context(), args, &stdout, &stderr, noEnv), 0; got != want {
+		t.Fatalf("run(%q) = %d, want %d; stderr %q", args, got, want, stderr.String())
+	}
+	// A new database is due a signals refresh, so both feeds were fetched,
+	// from the local server TestMain set up.
+	for _, path := range []string{"/kev.json", "/epss.csv"} {
+		if vulnSourceHits.get(path) == 0 {
+			t.Errorf("local server got no request for %s; the vulns job fetched it elsewhere", path)
+		}
+	}
+	if !strings.Contains(stdout.String(), "kev_errors=0") || !strings.Contains(stdout.String(), "epss_errors=0") {
+		t.Errorf("stdout = %q, want both feeds refreshed without error", stdout.String())
 	}
 }
 

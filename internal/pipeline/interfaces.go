@@ -30,9 +30,10 @@ type RunStore interface {
 type FindingStore interface {
 	// UpsertFinding inserts f, keyed by f.Fingerprint, in state open with
 	// first-seen and last-changed times taken from f.LastChangedAt. If the
-	// fingerprint exists it updates score, rank reason and last-changed time,
-	// clears the resolved time, and leaves the operator state alone. It
-	// returns the stored finding.
+	// fingerprint exists it updates score and rank reason, clears the
+	// resolved time, and leaves the operator state alone; the last-changed
+	// time moves to f.LastChangedAt only when the score or rank reason
+	// differs or the finding was resolved. It returns the stored finding.
 	UpsertFinding(ctx context.Context, f model.Finding) (model.Finding, error)
 	// ResolveFinding marks the unresolved finding with this fingerprint as
 	// resolved at the given time. It is not an error if there is none.

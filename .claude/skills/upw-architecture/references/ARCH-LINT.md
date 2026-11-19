@@ -26,10 +26,10 @@ go-arch-lint cannot enforce those, so a short `go list` check runs next to it (s
 
 The sketch depends on these. Check each one against the tool's behaviour before relying on it:
 
-1. **Imports inside one component.** The sketch assumes imports between packages of the *same* component are allowed. If so, a component that groups several services would let them import each other. That is why every service and every adapter below is its own component. Keep it that way even though the file is longer.
+1. **Imports inside one component.** Confirmed in M0 (WO-01): v1.19.2 rejects imports between two packages of the same component unless the component lists itself in `mayDependOn`. Every service and every adapter is still its own component. An empty `deps` entry (`name: {}`) is rejected, so a component that needs only `model` is left out of `deps`. Components for packages that do not exist yet need `allow.ignoreNotFoundComponents: true`.
 2. **Glob semantics in `in:`.** The sketch assumes `internal/notify/*` matches direct child packages only and does not match `internal/notify` itself, and that `**` matches any depth.
 3. **`excludeFiles` and test files.** The sketch assumes the regex `^.*_test\.go$` keeps test files out of the check. Tests may import a consumer package to assert an adapter satisfies its interface, so they must stay excluded.
-4. **How to install the tool.** Options are `go install` at a pinned version, or a `tool` directive in `go.mod`. A `tool` directive adds the module to `go.mod`, so it is a dependency question for the owner; ask the lead before choosing it.
+4. **How the tool is run.** Decided: `go run github.com/fe3dback/go-arch-lint@v1.19.2 check`, so the tool never enters `go.mod`. The committed `.go-arch-lint.yml` is the working file; the sketch below is kept for the reasoning only.
 
 ## Components and what each may depend on
 

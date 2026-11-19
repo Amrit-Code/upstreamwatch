@@ -1,8 +1,10 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -656,6 +658,65 @@ func TestTruncateUTF8(t *testing.T) {
 		if got := truncateUTF8(tt.in, tt.n); got != tt.want {
 			t.Errorf("truncateUTF8(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
 		}
+	}
+}
+
+func TestRunner_RedactsJobError(t *testing.T) {
+	t.Parallel()
+	token := "github_pat_" + strings.Repeat("A1b", 10)
+	jobErr := errors.New("fetch https://u:hunter2@git.example/x: " + token)
+	job := &fakeJob{name: "ingest", run: func(context.Context, model.Scope) (model.Stats, error) {
+		return nil, jobErr
+	}}
+	f := newFixture(t, job)
+	var logOut bytes.Buffer
+	f.runner.logger = slog.New(slog.NewTextHandler(&logOut, nil))
+
+	_, err := f.runner.Run(t.Context(), "ingest", model.Scope{})
+	if err == nil {
+		t.Fatal("Run() error = nil, want an error")
+	}
+	if len(f.runs.finished) != 1 || len(f.findings.upserted) != 1 {
+		t.Fatalf("FinishRun calls = %d, UpsertFinding calls = %d, want 1 each", len(f.runs.finished), len(f.findings.upserted))
+	}
+
+	places := map[string]string{
+		"runs error":    f.runs.finished[0].Error,
+		"rank reason":   f.findings.upserted[0].RankReason,
+		"log output":    logOut.String(),
+		"returned text": err.Error(),
+	}
+	for place, text := range places {
+		for _, secret := range []string{"hunter2", token} {
+			if strings.Contains(text, secret) {
+				t.Errorf("%s = %q, contains secret %q", place, text, secret)
+			}
+		}
+		if !strings.Contains(text, "[REDACTED]") {
+			t.Errorf("%s = %q, want it to contain [REDACTED]", place, text)
+		}
+	}
+	if want := "run job ingest: fetch https://[REDACTED]@git.example/x: [REDACTED]"; err.Error() != want {
+		t.Errorf("Run() error text = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, jobErr) {
+		t.Errorf("Run() error = %v, want errors.Is the job error", err)
+	}
+}
+
+func TestRunner_RedactedErrorUnwraps(t *testing.T) {
+	t.Parallel()
+	job := &fakeJob{name: "ingest", run: func(context.Context, model.Scope) (model.Stats, error) {
+		return nil, fmt.Errorf("clone https://u:hunter2@git.example/x: %w", context.Canceled)
+	}}
+	f := newFixture(t, job)
+
+	_, err := f.runner.Run(t.Context(), "ingest", model.Scope{})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(%v, context.Canceled) = false, want true", err)
+	}
+	if want := "run job ingest: clone https://[REDACTED]@git.example/x: context canceled"; err == nil || err.Error() != want {
+		t.Errorf("Run() error = %v, want %q", err, want)
 	}
 }
 

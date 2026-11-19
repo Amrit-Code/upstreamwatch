@@ -18,7 +18,7 @@ var _ checker = (*gitsrc.CLI)(nil)
 
 func TestCLI_Check_Installed(t *testing.T) {
 	t.Parallel()
-	g := gitsrc.New(slog.New(slog.DiscardHandler))
+	g := gitsrc.New(gitsrc.Options{}, slog.New(slog.DiscardHandler))
 	if err := g.Check(t.Context()); err != nil {
 		t.Errorf("Check() = %v, want nil", err)
 	}
@@ -26,7 +26,7 @@ func TestCLI_Check_Installed(t *testing.T) {
 
 func TestCLI_Check_NotInstalled(t *testing.T) {
 	t.Setenv("PATH", "")
-	g := gitsrc.New(slog.New(slog.DiscardHandler))
+	g := gitsrc.New(gitsrc.Options{}, slog.New(slog.DiscardHandler))
 	err := g.Check(t.Context())
 	if err == nil {
 		t.Fatal("Check() = nil, want the not-installed error")
@@ -40,7 +40,7 @@ func TestCLI_Check_CancelledContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	g := gitsrc.New(slog.New(slog.DiscardHandler))
+	g := gitsrc.New(gitsrc.Options{}, slog.New(slog.DiscardHandler))
 	if err := g.Check(ctx); err == nil {
 		t.Error("Check(cancelled) = nil, want an error")
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,8 @@ const (
 	defaultMaxCloneBytes = 2048 << 20
 	defaultCloneTimeout  = 30 * time.Minute
 	defaultFetchTimeout  = 10 * time.Minute
-	defaultMaxBlobBytes  = 5 << 20
+	defaultMaxBlobBytes  = 1 << 20
+	defaultMaxLogBytes   = 64 << 20
 )
 
 // errNotInstalled reports that no git executable was found on PATH.
@@ -48,7 +50,8 @@ type Options struct {
 	MaxCloneBytes int64         // size cap on one clone directory; zero means 2048 MiB
 	CloneTimeout  time.Duration // deadline for a first sync; zero means 30 minutes
 	FetchTimeout  time.Duration // deadline for a later sync and for ls-remote; zero means 10 minutes
-	MaxBlobBytes  int64         // ReadBlobs cap per blob; zero means 5 MiB
+	MaxBlobBytes  int64         // ReadBlobs cap per blob; zero means 1 MiB
+	MaxLogBytes   int64         // cap on the git log output ManifestCommits reads; zero means 64 MiB
 	// AllowFileURLs lets Sync accept file:// URLs and skips the address
 	// check for them. Only tests set it, to sync from fixture repositories.
 	AllowFileURLs bool
@@ -86,6 +89,9 @@ func New(opts Options, logger *slog.Logger) *CLI {
 	}
 	if opts.MaxBlobBytes <= 0 {
 		opts.MaxBlobBytes = defaultMaxBlobBytes
+	}
+	if opts.MaxLogBytes <= 0 {
+		opts.MaxLogBytes = defaultMaxLogBytes
 	}
 	if opts.LookupHost == nil {
 		opts.LookupHost = func(ctx context.Context, host string) ([]netip.Addr, error) {
@@ -335,3 +341,8 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 // String returns the kept bytes.
 func (b *cappedBuffer) String() string { return b.buf.String() }
+
+// formatMiB formats n bytes as a number of MiB for error messages.
+func formatMiB(n int64) string {
+	return strconv.FormatFloat(float64(n)/(1<<20), 'f', -1, 64)
+}

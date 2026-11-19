@@ -32,7 +32,9 @@ func (g *CLI) Head(ctx context.Context, repo model.TargetRepo) (string, error) {
 }
 
 // IsAncestor reports whether ancestor is reachable from commit in
-// repo.ClonePath.
+// repo.ClonePath. An ancestor commit that is not in the clone, as after a
+// force-push whose old history was pruned, is reported as not an ancestor;
+// a commit that is not in the clone is an error.
 func (g *CLI) IsAncestor(ctx context.Context, repo model.TargetRepo, ancestor, commit string) (bool, error) {
 	clone, err := g.prepareClone(repo)
 	if err != nil {
@@ -53,8 +55,39 @@ func (g *CLI) IsAncestor(ctx context.Context, repo model.TargetRepo, ancestor, c
 		return true, nil
 	case exitCode(err) == 1 && ctx.Err() == nil:
 		return false, nil
+	case exitCode(err) > 1 && ctx.Err() == nil:
+		// After a force-push the old commit can be unreachable and then
+		// pruned. An ancestor that no longer exists cannot be reachable from
+		// commit, so that is a plain "no" as long as commit itself exists.
+		ancestorOK, aErr := g.commitExists(ctx, clone, ancestor)
+		if aErr != nil || ancestorOK {
+			return false, fmt.Errorf("is-ancestor in %s: %w", repo.Slug, errors.Join(err, aErr))
+		}
+		commitOK, cErr := g.commitExists(ctx, clone, commit)
+		if cErr != nil || !commitOK {
+			return false, fmt.Errorf("is-ancestor in %s: %w", repo.Slug, errors.Join(err, cErr))
+		}
+		return false, nil
 	default:
 		return false, fmt.Errorf("is-ancestor in %s: %w", repo.Slug, err)
+	}
+}
+
+// commitExists reports whether rev names a commit present in the clone at
+// dir. Any exit status from git cat-file -e means it does not; failing to run
+// git is an error.
+func (g *CLI) commitExists(ctx context.Context, dir, rev string) (bool, error) {
+	err := g.run(ctx, invocation{
+		gitDir: dir,
+		args:   []string{"cat-file", "-e", "--end-of-options", rev + "^{commit}"},
+	})
+	switch {
+	case err == nil:
+		return true, nil
+	case exitCode(err) > 0 && ctx.Err() == nil:
+		return false, nil
+	default:
+		return false, fmt.Errorf("check commit %s: %w", rev, err)
 	}
 }
 
@@ -76,7 +109,8 @@ const logFormat = "%x01upw-commit%x00%H%x00%ct%x00%an%x00%ae%x00%s%x00"
 // after from (from the root commit when from is empty), that changed a path
 // matching one of patterns relative to their first parent, oldest first.
 // Each commit's Paths are the matching paths it added, changed or deleted,
-// sorted.
+// sorted. When git log prints more than MaxLogBytes, git is killed and
+// ManifestCommits returns an error naming the limit.
 func (g *CLI) ManifestCommits(ctx context.Context, repo model.TargetRepo, from, to string, patterns []string) ([]model.Commit, error) {
 	if len(patterns) == 0 {
 		return nil, fmt.Errorf("manifest commits of %s: no patterns", repo.Slug)
@@ -119,15 +153,48 @@ func (g *CLI) ManifestCommits(ctx context.Context, repo model.TargetRepo, from, 
 		args = append(args, ":(glob)"+p)
 	}
 
-	var stdout bytes.Buffer
-	if err := g.run(ctx, invocation{gitDir: clone, args: args, stdout: &stdout}); err != nil {
-		return nil, fmt.Errorf("manifest commits of %s: %w", repo.Slug, err)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stdout := &limitedBuffer{limit: g.opts.MaxLogBytes, stop: cancel}
+	runErr := g.run(ctx, invocation{gitDir: clone, args: args, stdout: stdout})
+	// run has waited for git and for the goroutine that writes stdout, so
+	// exceeded is safe to read here.
+	if stdout.exceeded {
+		return nil, fmt.Errorf("manifest commits of %s: git log output exceeded the %s MiB limit", repo.Slug, formatMiB(g.opts.MaxLogBytes))
 	}
-	commits, err := parseLog(stdout.Bytes())
+	if runErr != nil {
+		return nil, fmt.Errorf("manifest commits of %s: %w", repo.Slug, runErr)
+	}
+	commits, err := parseLog(stdout.buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("manifest commits of %s: %w", repo.Slug, err)
 	}
 	return commits, nil
+}
+
+// errLogLimit is what limitedBuffer returns for the write that would pass its
+// limit; it stops the copy from git's stdout pipe.
+var errLogLimit = errors.New("git log output limit reached")
+
+// limitedBuffer collects a process's standard output up to limit bytes. The
+// write that would pass the limit is refused: it sets exceeded and calls
+// stop, which kills the process, so neither memory nor a blocked pipe grows
+// without bound.
+type limitedBuffer struct {
+	buf      bytes.Buffer
+	limit    int64
+	stop     func()
+	exceeded bool
+}
+
+// Write appends p, or refuses all of it when the total would pass the limit.
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if int64(b.buf.Len())+int64(len(p)) > b.limit {
+		b.exceeded = true
+		b.stop()
+		return 0, errLogLimit
+	}
+	return b.buf.Write(p)
 }
 
 // parseLog reads the output of the log command in ManifestCommits and keeps

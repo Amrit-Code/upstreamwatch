@@ -72,4 +72,8 @@ Follow the report contract in your agent definition: full report to the report f
 
 ## Rulings
 
-None.
+2026-11-19, on the round-0 concerns:
+- PyPI names: upw is right; a package is identified by its version-less package URL, and the PyPI package URL normalises the name (recorded in `docs/decisions.md`, "Lead decisions for M1"). In the comparison, key PyPI events by the PEP 503 normalised name (lower case, runs of `-`, `_`, `.` replaced by `-`) on both sides, and collapse a git-pkgs `removed` plus `added` pair at the same commit and manifest whose names normalise equal: equal versions → no event, different versions → one `changed`. Do this as a normalisation step justified by that decision, not as per-event exceptions. Requirements are compared as before.
+- Pin the fixtures: after cloning, reset the clone's default branch to a fixed commit and index that, for both sides. Use the current default-branch HEAD SHA of each fixture at the time you make this change, recorded as a constant in the test with the date. A later bump of a pin is a deliberate edit.
+- The go-test referee template (build tag `referee`) is older than this work order; keep the `e2e` tag and the skip.
+- Expect more differences once WO-12 lands on main (a direct-flag change now emits `changed`; manifests under `testdata`, `vendor` and `node_modules` are skipped). The lead will fast-forward your worktree after WO-12 merges and send you a short round to rerun and add exceptions for those two decisions only.

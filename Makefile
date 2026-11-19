@@ -3,7 +3,7 @@ SHELL := /bin/sh
 # go-arch-lint runs through go run at a pinned version so it never enters go.mod.
 GO_ARCH_LINT := github.com/fe3dback/go-arch-lint@v1.19.2
 
-.PHONY: check build fmt
+.PHONY: check build fmt e2e
 
 # check is the acceptance command for every change. Each step stops the target
 # on failure.
@@ -25,6 +25,12 @@ check:
 	go run $(GO_ARCH_LINT) check --output-color=false
 	@echo "==> import-check"
 	sh scripts/check-imports.sh
+
+# e2e compares the timelines of two public fixture repositories with
+# git pkgs history. It needs the network and git-pkgs on PATH, so check leaves
+# it out.
+e2e:
+	go test -tags e2e -race -count=1 -run TestParity -v -timeout 20m ./cmd/upw/
 
 build:
 	go build -o bin/upw ./cmd/upw

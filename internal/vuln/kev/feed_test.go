@@ -205,3 +205,94 @@ func TestCheck_ServerDown(t *testing.T) {
 		t.Errorf("Check() = %q, want it to name %s", err, host)
 	}
 }
+
+// secretURLCase is a feed URL carrying a credential in the query string, in
+// userinfo, or in a URL that does not parse. Errors must not repeat it.
+type secretURLCase struct {
+	name     string
+	url      string
+	wantName string // what the error names instead
+}
+
+func secretURLCases(srvURL string) []secretURLCase {
+	host := strings.TrimPrefix(srvURL, "http://")
+	return []secretURLCase{
+		{name: "query credential", url: srvURL + "/kev.json?key=private-value#frag", wantName: host},
+		{name: "userinfo", url: "http://private-name:private-value@" + host + "/kev.json", wantName: host},
+		{name: "malformed", url: srvURL + "/%zz?key=private-value", wantName: "(invalid URL)"},
+	}
+}
+
+// checkNoSecrets fails when err does not name want or repeats the userinfo,
+// query or fragment of a secretURLCases URL.
+func checkNoSecrets(t *testing.T, call string, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s = nil error, want one", call)
+	}
+	got := err.Error()
+	for _, leak := range []string{"private-", "frag"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("%s error = %q, want no userinfo, query or fragment", call, got)
+		}
+	}
+	if !strings.Contains(got, want) {
+		t.Errorf("%s error = %q, want it to contain %q", call, got, want)
+	}
+}
+
+func TestKEVRefresh_ErrorsOmitURLSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "fetch", status: http.StatusNotFound},
+		{name: "decode", status: http.StatusOK, body: "not json"},
+	}
+	for _, tt := range tests {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tt.status)
+			_, _ = w.Write([]byte(tt.body))
+		}))
+		t.Cleanup(srv.Close)
+		for _, c := range secretURLCases(srv.URL) {
+			t.Run(tt.name+" "+c.name, func(t *testing.T) {
+				t.Parallel()
+				_, err := newFeed(c.url).Refresh(t.Context())
+				checkNoSecrets(t, "Refresh()", err, c.wantName)
+			})
+		}
+	}
+}
+
+func TestKEVRefresh_ErrorURLKeepsPath(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := newFeed(srv.URL + "/feeds/kev.json?key=private-value").Refresh(t.Context())
+	if err == nil {
+		t.Fatal("Refresh() = nil error, want one")
+	}
+	if want := "kev: fetch " + srv.URL + "/feeds/kev.json: "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("Refresh() error = %q, want prefix %q", err, want)
+	}
+}
+
+func TestCheck_ErrorsOmitURLSecrets(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	for _, c := range secretURLCases(srv.URL) {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			checkNoSecrets(t, "Check()", newFeed(c.url).Check(t.Context()), c.wantName)
+		})
+	}
+}

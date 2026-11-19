@@ -62,15 +62,15 @@ func New(hc *httpx.Client, opts Options, logger *slog.Logger) *Feed {
 func (f *Feed) Refresh(ctx context.Context) ([]model.Signal, error) {
 	resp, err := f.hc.Do(ctx, httpx.Request{URL: f.url, Validators: httpx.ValidatorsNone, MaxBodyBytes: maxBodyBytes})
 	if err != nil {
-		return nil, fmt.Errorf("epss: fetch %s: %w", f.url, err)
+		return nil, fmt.Errorf("epss: fetch %s: %w", diagURL(f.url), err)
 	}
 	r, err := f.csvReader(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("epss: decode %s: %w", f.url, err)
+		return nil, fmt.Errorf("epss: decode %s: %w", diagURL(f.url), err)
 	}
 	signals, skipped, err := parse(r)
 	if err != nil {
-		return nil, fmt.Errorf("epss: decode %s: %w", f.url, err)
+		return nil, fmt.Errorf("epss: decode %s: %w", diagURL(f.url), err)
 	}
 	f.logger.Info("epss refresh finished", "signals", len(signals), "skipped", skipped)
 	return signals, nil
@@ -220,11 +220,25 @@ func (f *Feed) Check(ctx context.Context) error {
 	return nil
 }
 
-// hostOf returns the host of raw, or raw itself if it does not parse.
+// invalidURL stands in for a feed URL that does not parse or has no host, so
+// diagnostics never echo raw input.
+const invalidURL = "(invalid URL)"
+
+// diagURL returns raw as scheme://host/path for errors and logs, without
+// userinfo, query or fragment, which may carry credentials.
+func diagURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return invalidURL
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+}
+
+// hostOf returns the host of raw, without userinfo.
 func hostOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return raw
+		return invalidURL
 	}
 	return u.Host
 }

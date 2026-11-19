@@ -66,3 +66,51 @@ Decisions:
 - Decompressed cap enforced by a streaming capped reader (unexported field `maxDecompressed`, 256 MiB set by New, lowered in an internal test); the CSV is parsed while decompressing rather than buffered.
 - Gzip fixture committed as a binary file next to its plain-CSV source.
 Outside scope: none
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-04-kev-epss-adapters.md
+Finding: WO04-001 (full feed URL, including query and userinfo, interpolated into errors; hostOf returned raw input on parse failure).
+Files changed:
+- internal/vuln/kev/feed.go (modified): new `diagURL` (scheme://host/path only) used in the fetch and decode errors; `hostOf` and `diagURL` return the constant `(invalid URL)` when the URL does not parse or has no host; `hostOf` uses `u.Host`, which excludes userinfo.
+- internal/vuln/kev/feed_test.go (modified): `TestKEVRefresh_ErrorsOmitURLSecrets` (fetch and decode errors x query credential with fragment, userinfo, malformed URL), `TestKEVRefresh_ErrorURLKeepsPath` (error names scheme, host and path, query dropped), `TestCheck_ErrorsOmitURLSecrets` (same three URLs).
+- internal/vuln/epss/feed.go (modified): same change as kev.
+- internal/vuln/epss/feed_test.go (modified): `TestEPSSRefresh_ErrorsOmitURLSecrets`, `TestEPSSRefresh_ErrorURLKeepsPath`, `TestCheck_ErrorsOmitURLSecrets`, mirroring kev.
+Commands run:
+- `go test -race -count=1 -v -run 'Secrets|KeepsPath' ./internal/vuln/kev/ ./internal/vuln/epss/` -> exit 1 on the first try. The failure was in the test, not the code: the leak marker "user" matched httpx's own refusal text "URL has userinfo", e.g.
+  feed_test.go:264: Refresh() error = "kev: fetch http://127.0.0.1:59878/kev.json: GET 127.0.0.1:59878: URL has userinfo", want no userinfo, query or fragment
+  Fixed by using userinfo `private-name:private-value` and checking for the markers "private-" and "frag".
+- `go test -race -count=3 ./internal/vuln/kev/ ./internal/vuln/epss/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	1.288s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	1.302s
+- `make check` -> exit 0
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/vuln	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	1.163s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	1.160s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race ./internal/vuln/kev/ ./internal/vuln/epss/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	(cached)
+- `git status --porcelain` -> exit 0 (before this section was appended)
+   M internal/vuln/epss/feed.go
+   M internal/vuln/epss/feed_test.go
+   M internal/vuln/kev/feed.go
+   M internal/vuln/kev/feed_test.go
+Decisions:
+- Placeholder text for an unparseable or hostless URL: `(invalid URL)`, used for both the diagnostic URL and the Check host.
+- The diagnostic URL is computed when an error is built, not stored at construction; the raw URL is still what is requested.
+- I did not rerun the new regression tests against the pre-fix code. The old code formatted `f.url` verbatim, so the query-credential cases would have contained `private-value`.
+Outside scope: none

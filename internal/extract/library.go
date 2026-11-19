@@ -38,13 +38,13 @@ func (e *Extractor) parseWithLibrary(p string, content []byte, kind model.Manife
 		// which for a directory or file package is a local path; for uv.lock
 		// it gives no source kind, so the lockfile is scanned for it.
 		if (poetryLock && isLocalSource(dep.RegistryURL)) || uvLocal[dep.Name] {
-			e.logger.Debug("local package skipped", "path", p, "package", dep.Name)
+			e.logger.Debug("local package skipped", "path", p, "package", model.Redact(dep.Name))
 			continue
 		}
 		if res.Ecosystem == ecosystemActions && strings.HasPrefix(dep.Name, "docker://") {
 			// The library gives a docker:// step a malformed githubactions
 			// PURL instead of none; it names an image, not an action.
-			e.logger.Debug("docker action skipped", "path", p, "uses", dep.Name)
+			e.logger.Debug("docker action skipped", "path", p, "uses", model.Redact(dep.Name))
 			continue
 		}
 		d := model.Dependency{

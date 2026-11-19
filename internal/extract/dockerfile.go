@@ -46,7 +46,7 @@ func (e *Extractor) parseDockerfile(p string, content []byte) (model.ParsedManif
 		case isStage, strings.EqualFold(image, "scratch"):
 			continue
 		case strings.Contains(image, "$"):
-			e.logger.Debug("image with a variable skipped", "path", p, "image", image)
+			e.logger.Debug("image with a variable skipped", "path", p, "image", model.Redact(image))
 			continue
 		}
 

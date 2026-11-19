@@ -52,7 +52,7 @@ func (e *Extractor) parseCompose(p string, content []byte) (model.ParsedManifest
 			continue
 		}
 		if strings.Contains(image, "$") {
-			e.logger.Debug("image with a variable skipped", "path", p, "image", image)
+			e.logger.Debug("image with a variable skipped", "path", p, "image", model.Redact(image))
 			continue
 		}
 		ref, err := parseImageRef(image)

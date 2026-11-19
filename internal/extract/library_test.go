@@ -1,6 +1,9 @@
 package extract
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -185,6 +188,116 @@ func TestExactPin(t *testing.T) {
 			if got := exactPin(tt.in); got != tt.want {
 				t.Errorf("exactPin(%q) = %q, want %q", tt.in, got, tt.want)
 			}
+		})
+	}
+}
+
+// debugExtractor returns an Extractor whose debug-level log lines are written
+// to the returned buffer.
+func debugExtractor() (*Extractor, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return New(Options{DeriveToolchainFromImages: true}, logger), &buf
+}
+
+// checkSkipLogged fails the test unless log has a line with msg and no
+// occurrence of SECRET.
+func checkSkipLogged(t *testing.T, log, msg string) {
+	t.Helper()
+	if !strings.Contains(log, msg) {
+		t.Errorf("log = %q, want a %q line", log, msg)
+	}
+	if strings.Contains(log, "SECRET") {
+		t.Errorf("log = %q, want no SECRET", log)
+	}
+}
+
+func TestParse_SkippedDockerActionLogRedacted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		uses string
+	}{
+		// The library splits this at the first ':' after the scheme, so the
+		// password is already absent from the name it returns.
+		{"userinfo", "docker://user:SECRET@registry.example/img:1"},
+		// A token as the userinfo reaches the logged name intact.
+		{"token userinfo", "docker://ghp_SECRET0123456789abcdefghij@registry.example/img:1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n" +
+				"      - uses: actions/checkout@v4\n" +
+				"      - uses: " + tt.uses + "\n"
+			e, buf := debugExtractor()
+			got, err := e.Parse(".github/workflows/ci.yml", []byte(workflow))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			want := model.ParsedManifest{Ecosystem: "github-actions", Kind: model.ManifestKindManifest, Dependencies: []model.Dependency{{
+				Package:     model.Package{PURL: "pkg:githubactions/actions/checkout", Ecosystem: "github-actions", Name: "actions/checkout"},
+				Version:     "v4",
+				Requirement: "v4",
+				Direct:      model.DirectYes,
+				Scope:       "runtime",
+			}}}
+			checkParsed(t, ".github/workflows/ci.yml", got, want)
+			checkSkipLogged(t, buf.String(), "docker action skipped")
+		})
+	}
+}
+
+func TestParse_SkippedLocalPackageLogRedacted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		pkgName string
+	}{
+		// Only the package name is logged, not the source URL holding the
+		// credential.
+		{"userinfo in source url", "example-wheel"},
+		// A token-shaped package name reaches the log line intact.
+		{"token package name", "ghp_SECRET0123456789abcdefghij"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			lock := `[[package]]
+name = "click"
+version = "8.1.7"
+description = "Composable command line interface toolkit"
+optional = false
+python-versions = ">=3.7"
+files = []
+
+[[package]]
+name = "` + tt.pkgName + `"
+version = "0.2.0"
+description = "A local archive"
+optional = false
+python-versions = "*"
+files = []
+
+[package.source]
+type = "file"
+url = "file://user:SECRET@fileserver.example/wheels/example_wheel-0.2.0.tar.gz"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "0000000000000000000000000000000000000000000000000000000000000000"
+`
+			e, buf := debugExtractor()
+			got, err := e.Parse("poetry.lock", []byte(lock))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			want := model.ParsedManifest{Ecosystem: "pypi", Kind: model.ManifestKindLockfile, Dependencies: []model.Dependency{
+				pypiDep("click", "click", "8.1.7", "8.1.7", model.DirectUnknown, "runtime"),
+			}}
+			checkParsed(t, "poetry.lock", got, want)
+			checkSkipLogged(t, buf.String(), "local package skipped")
 		})
 	}
 }

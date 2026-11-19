@@ -2,7 +2,7 @@
 
 This document shows the SQLite schema: three entity-relationship diagrams, every table with its columns, and which tables can be rebuilt from outside sources. The schema comes from section 4 of [the plan](../mvp-plan/PLAN.md) plus four accepted additions: `llm_verdicts.request_payload`, `llm_verdicts.evidence_verified`, the `digests` table (with its `error` column) and the `settings` table. Which interface reads and writes each table is in [data-access.md](data-access.md).
 
-The initial schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md). `0002_timeline.sql` then adds `dep_versions.requirement`, recreates the `dep_state` view to carry it, and adds two indexes: `dep_versions_identity` and `commits_repo_position`.
+The initial schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md). `0002_timeline.sql` then adds `dep_versions.requirement`, recreates the `dep_state` view to carry it, and adds two indexes: `dep_versions_identity` and `commits_repo_position`. `0003_timeline_settings.sql` adds `repos.timeline_settings`.
 
 Conventions: names are snake_case, primary keys are integers unless noted, and timestamp columns end in `_ts` and hold ISO-8601 UTC text (RFC 3339, second precision, `Z` suffix). Every table has `created_ts` and `updated_ts`, set by the store, except `kv`, `http_cache` and `settings`, which have only `updated_ts`, and `schema_migrations`, which has neither. The two timestamps are left out of the listings below. The ER diagrams show only keys and the columns that carry meaning.
 
@@ -28,6 +28,7 @@ erDiagram
     text url
     text default_branch
     text last_indexed_sha
+    text timeline_settings
     text last_fetch_error
   }
   commits {
@@ -285,6 +286,7 @@ erDiagram
 | default_branch | the branch indexed; set by a successful fetch |
 | clone_path | the bare clone's directory; set by a successful fetch |
 | last_indexed_sha | the branch commit the timeline was last built to; set by the timeline job |
+| timeline_settings | the fingerprint of the indexing settings (exclusions, ecosystems allowlist, Unity, extractor version) the stored timeline was built with; set by the timeline job together with `last_indexed_sha`, NULL before the first timeline run. A different fingerprint makes the next run rebuild the repo from the root |
 | last_fetch_ts | the last fetch attempt, successful or not |
 | last_fetch_error | the last attempt's error text; NULL when it succeeded |
 

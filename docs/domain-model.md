@@ -72,7 +72,7 @@ Two small types in `internal/model` are used by the `Job` interface in [interfac
 
 | Type | Meaning |
 |---|---|
-| `Scope` | What a job run covers: all repos, or one repo slug (`RepoSlug`; empty means all, and `All()` says so). |
+| `Scope` | What a job run covers: all repos, or one repo slug (`RepoSlug`; empty means all, and `All()` says so). `Rebuild` asks a job that builds state from history, the timeline, to discard what it stored for the repos in scope and start from the root; other jobs ignore it. |
 | `Stats` | What a job run reports back: named counters (`map[string]int64`); the `runs` table stores it as a JSON object in `stats`. |
 
 ## Other types
@@ -83,7 +83,7 @@ Two small types in `internal/model` are used by the `Job` interface in [interfac
 | `HTTPValidator` | The `ETag` and `Last-Modified` a server sent with its last full response to one URL, with the fetch time and status. The `http_cache` table stores one per exact URL, and `httpx` reads it to make a request conditional. |
 | `ErrNotFound` | The error the store wraps when a looked-up record does not exist; callers test it with `errors.Is`. |
 | `Redact` | A function, not a type: `Redact(s string) string` replaces credentials in error text with `[REDACTED]` (URL userinfo, GitHub tokens, Anthropic and OpenAI style keys, authorization header values, `x-access-token` values). Error text from outside tools passes through it before it is stored, logged or shown; `pipeline.Runner` and `ingest` use it. |
-| `TargetRepo` | One repository whose history is mined: the configured fields (slug, URL, branch) and the stored ones (ID, default branch, clone path, last indexed commit, last fetch time and error). `Token` and `AllowPrivateHost` are not stored. |
+| `TargetRepo` | One repository whose history is mined: the configured fields (slug, URL, branch) and the stored ones (ID, default branch, clone path, last indexed commit, timeline settings fingerprint, last fetch time and error). `Token` and `AllowPrivateHost` are not stored. |
 | `SyncResult`, `FetchResult` | What a clone or fetch produced (branch, head, clone path, whether it cloned), and one fetch attempt as recorded in `repos` (time, and branch and clone path only on success, or the error text). |
 | `Commit`, `BlobRef`, `Blob` | A first-parent commit that touched manifest paths, with the matching paths it changed; a file at a commit; its content, with `Missing` for a deleted path and `TooLarge` for a file over the size cap. |
 | `Package`, `Dependency`, `ParsedManifest`, `ManifestKind` | A package without a version (`PURL`, ecosystem, name); one package as one file declares it (version, requirement, `Directness`, scope); one parsed file (ecosystem, kind, dependencies); `manifest` or `lockfile`. `ErrUnsupportedFile` is what an extractor returns, wrapped, for a path it does not handle. |

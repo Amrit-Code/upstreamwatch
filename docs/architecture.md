@@ -151,7 +151,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
-After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end. `cmd/upw` also wraps each job so that it runs under an exclusive lock file, `<data_dir>/locks/<job>.lock`, so a `upw run` beside `upw serve` on one data directory waits until the other process's run of the same job ends, or until its own context ends.
 
 ## What each job does
 
@@ -170,7 +170,9 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | digest | `report.Service` | ranking; what changed since last digest | `Notifier` (every enabled one) | findings, digests |
 | backup | `ops.Backup` | retention | store only | backup file |
 
-The timeline job bounds what a repository can make it hold or store. It reads file contents from `GitSource` 32 files at a time. A file that parses to more than 20,000 dependencies counts as a parse error, and a target run that would produce more than 500,000 new events fails. Before events are computed it drops every dependency whose package name or package URL contains a control character, whitespace, `://` or `@`, counting them in the `deps_dropped` stat, and passes every version and requirement through `model.Redact`. Parse errors are logged redacted.
+The timeline job bounds what a repository can make it hold or store. It reads file contents from `GitSource` 8 files at a time, so at most 64 MiB of file data is held at once (a file over the blob cap, 8 MiB by default, is not read). A file that parses to more than 20,000 dependencies counts as a parse error, and a target run that would produce more than 500,000 new events fails. Before events are computed it drops every dependency whose package name or package URL contains a control character, whitespace, `://` or `@`, counting them in the `deps_dropped` stat, and passes every version and requirement through `model.Redact`. Parse errors are logged redacted.
+
+The timeline job rebuilds a repo from its first commit, instead of walking on from the last indexed commit, in three cases: the last indexed commit is no longer on the first-parent chain of the fetched head (`GitSource.OnFirstParentChain`), the repo's stored settings fingerprint (`repos.timeline_settings`) differs from the current one, or the run was started with `upw run timeline -rebuild`. The fingerprint covers the extractor version, `unity`, the `ecosystems` allowlist and the exclusions; an empty stored fingerprint is not a change. Events are folded in commit order, and an interval's end is never earlier than its start, even when a commit's date is.
 
 ## Entry points
 
@@ -199,13 +201,15 @@ The settings page never shows the stored key. It shows the last four characters 
 | CLI | Handled by |
 |---|---|
 | `upw serve` | starts Scheduler and web.Server; stops on SIGINT or SIGTERM, web server first, then the scheduler, then the store |
-| `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all` |
+| `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all`; `run timeline -rebuild` (with or without `-repo`) discards the stored timeline of the targets in scope and rebuilds it from the first commit, and is refused for any other job |
 | `upw timeline <slug> [package-url] [-on YYYY-MM-DD] [-json]` | `query.Service.Timeline`; prints the repo's dependency intervals as a table, or as a JSON array with `-json`; in the table a package URL, version or manifest path with a control character or invalid UTF-8 is printed in quoted form; `-on` keeps the intervals in force at the end of that UTC day; builds no Runner and starts nothing |
 | `upw findings` | `internal/query` |
 | `upw llm estimate\|rejudge` | `triage.Service` |
 | `upw eval run\|report\|import` | `eval.Service` (`import` imports labels) |
 | `upw export verdicts\|labels\|state` | store export; one kind per invocation, written to stdout. `upw eval export` is an alias of `upw export labels` |
 | `upw doctor` | each outbound adapter's `Check` (the `Checker` interface in [interfaces.md](interfaces.md)); prints one line per check, does not open the database and exits 1 if any check fails. The probes are listed in [external-sources.md](external-sources.md) |
+
+Job errors and stats lines printed to a terminal by `upw run` and the failure detail of `upw doctor` are escaped like `upw timeline` output, except that a newline or tab is kept: a message holding any other control character or invalid UTF-8 is printed in quoted form.
 
 Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M1 the Runner has two jobs, ingest and timeline, so `run all -once` runs those two; a schedule's chain leaves out the jobs not registered yet, so the `ingest` schedule runs ingest then timeline until the usage and upstream jobs exist, and the other schedules' chains are empty until the milestones that add their jobs. The commands `findings`, `llm`, `eval` and `export` are planned for later milestones.
 

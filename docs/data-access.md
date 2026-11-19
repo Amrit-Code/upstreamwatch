@@ -70,14 +70,14 @@ The table above is the design. So far these methods exist on `store.DB`:
 | Interface | Methods on `store.DB` | Table |
 |---|---|---|
 | `RepoStore` | `UpsertRepo`, `RecordFetch`, `GetRepo`, `ListRepos` | repos |
-| `TimelineStore` | `ListEvents`, `ListIntervals`, `ApplyTimeline` | commits, manifests, packages, dep_events, dep_versions (and `repos.last_indexed_sha`) |
+| `TimelineStore` | `ListEvents`, `ListIntervals`, `ApplyTimeline` | commits, manifests, packages, dep_events, dep_versions (and `repos.last_indexed_sha`, `repos.timeline_settings`) |
 | `RunStore` | `StartRun`, `FinishRun`, `LatestRuns` | runs |
 | `FindingStore` | `UpsertFinding`, `ResolveFinding`, `ListOpenFindings` | findings, finding_state |
 | `CacheStore` (http half) | `GetHTTPValidator`, `SaveHTTPValidator` | http_cache |
 
 `store.DB` also has `Open`, `Close`, `Migrate` and `InTx`. `Backup` and `Export` and the other interfaces come with the milestones that need them. The `kv` half of `CacheStore` is still to come, in M2.
 
-`ApplyTimeline` writes one timeline run for one repo in one `InTx` transaction. It appends the new commits, upserts manifests and packages, inserts the events, replaces the repo's intervals while keeping the row ID of every interval whose manifest, package and opening commit are unchanged, and sets `repos.last_indexed_sha`. With `Reset` set it first deletes the repo's commits, events and intervals, for a branch whose history was rewritten.
+`ApplyTimeline` writes one timeline run for one repo in one `InTx` transaction. It appends the new commits, upserts manifests and packages, inserts the events, replaces the repo's intervals while keeping the row ID of every interval whose manifest, package and opening commit are unchanged, and sets `repos.last_indexed_sha` and `repos.timeline_settings` (NULL when the fingerprint is empty). With `Reset` set it first deletes the repo's commits, events and intervals, for a rebuild from the root: a branch whose history was rewritten, a changed settings fingerprint, or `upw run timeline -rebuild`. An existing `packages` row keeps the name it was first stored with; the upsert only fills in an ecosystem the row lacked.
 
 Each interface a service uses is declared in that service's package, so the sets differ by consumer: `pipeline.RunStore` (`StartRun`, `FinishRun`) and `pipeline.FindingStore` (`UpsertFinding`, `ResolveFinding`), `query.RunStore` (`LatestRuns`) and `query.FindingStore` (`ListOpenFindings`), `httpx.CacheStore` (`GetHTTPValidator`, `SaveHTTPValidator`), `ingest.RepoStore` (`UpsertRepo`, `RecordFetch`), `timeline.RepoStore` (`GetRepo`), `timeline.TimelineStore` (`ListEvents`, `ApplyTimeline`) and `query.TimelineStore` (`GetRepo`, `ListRepos`, `ListIntervals`). `*store.DB` satisfies all of them. `UpsertFinding` inserts a finding in state `open` together with its `finding_state` row, in one transaction; for a fingerprint that exists it updates score, rank reason and last-changed time, clears `resolved_ts` and leaves the operator state alone. `ListOpenFindings` returns unresolved findings in state `open` or `acked`, highest score first.
 

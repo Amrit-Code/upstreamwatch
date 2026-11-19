@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
+	"github.com/Amrit-Code/upstreamwatch/internal/query"
 	"github.com/Amrit-Code/upstreamwatch/internal/web"
 )
 
@@ -41,13 +42,60 @@ func (f *fakeFindings) OpenFindings(ctx context.Context) ([]model.Finding, error
 	return f.findings, nil
 }
 
+// fakeTimeline is a TimelineReader returning canned values and recording the
+// slug and filter of the last Timeline call.
+type fakeTimeline struct {
+	repos     []model.TargetRepo
+	repo      model.TargetRepo
+	intervals []model.DepInterval
+	err       error
+
+	gotSlug   string
+	gotFilter query.TimelineFilter
+	calls     int
+}
+
+func (f *fakeTimeline) Repos(ctx context.Context) ([]model.TargetRepo, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.repos, nil
+}
+
+func (f *fakeTimeline) Timeline(ctx context.Context, slug string, filter query.TimelineFilter) (model.TargetRepo, []model.DepInterval, error) {
+	f.gotSlug, f.gotFilter = slug, filter
+	f.calls++
+	if f.err != nil {
+		return model.TargetRepo{}, nil, f.err
+	}
+	return f.repo, f.intervals, nil
+}
+
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// newTestServer builds a Server with the given fakes, failing the test on a
-// construction error.
+// newTestServer builds a Server with the given fakes and an empty timeline
+// reader, failing the test on a construction error.
 func newTestServer(t *testing.T, h web.HealthReader, f web.FindingsReader) *web.Server {
 	t.Helper()
-	s, err := web.NewServer(h, f, web.Options{Listen: "127.0.0.1:0"}, discardLogger())
+	return newTimelineServer(t, h, f, &fakeTimeline{})
+}
+
+// newTimelineServer builds a Server with the given fakes, failing the test on
+// a construction error.
+func newTimelineServer(t *testing.T, h web.HealthReader, f web.FindingsReader, tl web.TimelineReader) *web.Server {
+	t.Helper()
+	s, err := web.NewServer(h, f, tl, web.Options{Listen: "127.0.0.1:0"}, discardLogger())
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return s
+}
+
+// newLoggingTimelineServer builds a Server around tl that logs to logs.
+func newLoggingTimelineServer(t *testing.T, tl web.TimelineReader, logs io.Writer) *web.Server {
+	t.Helper()
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, tl, web.Options{Listen: "127.0.0.1:0"},
+		slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

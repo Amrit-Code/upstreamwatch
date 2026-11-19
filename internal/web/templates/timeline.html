@@ -1,0 +1,37 @@
+{{define "content" -}}
+<h1>{{.Repo.Slug}}</h1>
+<dl class="meta">
+<dt>URL</dt><dd>{{.Repo.URL}}</dd>
+<dt>Branch</dt><dd>{{.Repo.Branch}}</dd>
+<dt>Last indexed commit</dt><dd><code>{{.Repo.Commit}}</code></dd>
+</dl>
+{{if .Package -}}
+<h2>History of {{.Package}}</h2>
+<p><a href="{{.AllURL}}">Back to all packages</a></p>
+{{end -}}
+<form class="filter" method="get" action="{{.ClearURL}}">
+{{if .Package}}<input type="hidden" name="pkg" value="{{.Package}}">
+{{end -}}
+<label>Package contains <input type="text" name="q" value="{{.Q}}"></label>
+<label>Pinned on <input type="date" name="on" value="{{.On}}"></label>
+<button type="submit">Filter</button>
+<a href="{{.ClearURL}}">Clear filters</a>
+</form>
+{{if .Rows -}}
+<table>
+<thead>
+<tr><th>Package</th><th>Version</th><th title="{{template "datenote"}}">From</th><th title="{{template "datenote"}}">To</th><th>Direct</th><th>Manifest</th></tr>
+</thead>
+<tbody>
+{{range .Rows -}}
+<tr{{if .Open}} class="open"{{end}}><td><a href="{{.PackageURL}}">{{.Package}}</a></td><td>{{.Version}}</td><td>{{.From}}</td><td>{{.To}}</td><td>{{.Direct}}</td><td>{{.Manifest}}</td></tr>
+{{end -}}
+</tbody>
+</table>
+<p class="note">{{template "datenote"}}</p>
+{{- else -}}
+<p class="empty">{{.Empty}}</p>
+{{- end}}
+{{- end}}
+
+{{define "datenote"}}Dates are the committer date of the first-parent commit, so a merged change is dated when it was merged.{{end}}

@@ -34,12 +34,13 @@ type Options struct {
 	BaseURL string // the configured http.base_url; may be empty
 }
 
-// Server is the web UI: the findings page, the health endpoint and the
-// stylesheet, behind the security-header middleware, the host check and the
-// cross-origin check.
+// Server is the web UI: the findings page, the repo and timeline pages, the
+// health endpoint and the stylesheet, behind the security-header middleware,
+// the host check and the cross-origin check.
 type Server struct {
 	health   HealthReader
 	findings FindingsReader
+	timeline TimelineReader
 	opts     Options
 	logger   *slog.Logger
 	pages    map[string]*template.Template
@@ -55,7 +56,7 @@ type Server struct {
 // is a loopback address) and the host of BaseURL. It returns an error when a
 // template fails to parse or BaseURL is not an absolute http or https URL. It
 // does not listen.
-func NewServer(health HealthReader, findings FindingsReader, opts Options, logger *slog.Logger) (*Server, error) {
+func NewServer(health HealthReader, findings FindingsReader, timeline TimelineReader, opts Options, logger *slog.Logger) (*Server, error) {
 	pages, err := parsePages(templateFS)
 	if err != nil {
 		return nil, err
@@ -63,6 +64,7 @@ func NewServer(health HealthReader, findings FindingsReader, opts Options, logge
 	s := &Server{
 		health:   health,
 		findings: findings,
+		timeline: timeline,
 		opts:     opts,
 		logger:   logger,
 		pages:    pages,
@@ -72,6 +74,8 @@ func NewServer(health HealthReader, findings FindingsReader, opts Options, logge
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleFindings)
+	mux.HandleFunc("GET /repos", s.handleRepos)
+	mux.HandleFunc("GET /repos/{slug}", s.handleTimeline)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /static/style.css", s.handleStyle)
 
@@ -173,7 +177,7 @@ func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 		return nil, fmt.Errorf("parse layout template: %w", err)
 	}
 	pages := make(map[string]*template.Template)
-	for _, name := range []string{"findings"} {
+	for _, name := range []string{"findings", "repos", "timeline", "error"} {
 		clone, err := base.Clone()
 		if err != nil {
 			return nil, fmt.Errorf("clone layout for %s: %w", name, err)

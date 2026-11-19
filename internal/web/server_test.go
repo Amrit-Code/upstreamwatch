@@ -115,7 +115,7 @@ func TestHealth_StoreError(t *testing.T) {
 	t.Parallel()
 	storeErr := errors.New("sqlite: database disk image is malformed")
 	var logs bytes.Buffer
-	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, web.Options{Listen: testHost},
+	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: testHost},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -214,7 +214,7 @@ func TestStylesheet(t *testing.T) {
 func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t, &fakeHealth{}, &fakeFindings{})
-	for _, path := range []string{"/", "/health", "/static/style.css", "/nope"} {
+	for _, path := range []string{"/", "/health", "/static/style.css", "/nope", "/repos", "/repos/server"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			rec := get(t, s.Handler(), path)
@@ -279,7 +279,7 @@ func TestNewServer_BadBaseURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{BaseURL: tt.baseURL}, discardLogger())
+			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{BaseURL: tt.baseURL}, discardLogger())
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("NewServer(BaseURL %q) error = %v, wantErr %v", tt.baseURL, err, tt.wantErr)
 			}
@@ -292,7 +292,7 @@ func TestNewServer_BadBaseURL(t *testing.T) {
 
 func TestNewServer_TrustsBaseURLOrigin(t *testing.T) {
 	t.Parallel()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{},
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{},
 		web.Options{BaseURL: "https://upw.example.net/"}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -314,7 +314,7 @@ func TestServe_ShutsDownOnCancel(t *testing.T) {
 	t.Parallel()
 	capture := newAddrCapture()
 	runs := []model.Run{{ID: 1, Job: "ingest", StartedAt: t0, FinishedAt: t0.Add(5 * time.Second), Status: model.RunSucceeded}}
-	s, err := web.NewServer(&fakeHealth{runs: runs}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(&fakeHealth{runs: runs}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -377,7 +377,7 @@ func TestServe_ClosesConnectionsAfterShutdownDeadline(t *testing.T) {
 	t.Parallel()
 	health := &blockingHealth{entered: make(chan struct{}), released: make(chan struct{})}
 	capture := newAddrCapture()
-	s, err := web.NewServer(health, &fakeFindings{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(health, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -441,7 +441,7 @@ func TestServe_ClosesConnectionsAfterShutdownDeadline(t *testing.T) {
 
 func TestServe_ListenError(t *testing.T) {
 	t.Parallel()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:not-a-port"}, discardLogger())
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:not-a-port"}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -488,7 +488,7 @@ func TestHostCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.listen+" "+tt.baseURL+" "+tt.host, func(t *testing.T) {
 			t.Parallel()
-			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{},
+			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{},
 				web.Options{Listen: tt.listen, BaseURL: tt.baseURL}, discardLogger())
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
@@ -508,7 +508,7 @@ func TestHostCheck(t *testing.T) {
 func TestHostCheck_RejectionKeepsSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:8080"},
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:8080"},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -557,7 +557,7 @@ func TestHostCheck_RebindingShape(t *testing.T) {
 func TestServe_PortZeroAllowsActualAddress(t *testing.T) {
 	t.Parallel()
 	capture := newAddrCapture()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

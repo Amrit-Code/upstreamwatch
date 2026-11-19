@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>server - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+<a href="/repos">Repositories</a>
+</nav>
+</header>
+<main>
+<h1>server</h1>
+<dl class="meta">
+<dt>URL</dt><dd>https://github.com/example-org/example-server.git</dd>
+<dt>Branch</dt><dd>main</dd>
+<dt>Last indexed commit</dt><dd><code>0123456789ab</code></dd>
+</dl>
+<form class="filter" method="get" action="/repos/server">
+<label>Package contains <input type="text" name="q" value=""></label>
+<label>Pinned on <input type="date" name="on" value=""></label>
+<button type="submit">Filter</button>
+<a href="/repos/server">Clear filters</a>
+</form>
+<table>
+<thead>
+<tr><th>Package</th><th>Version</th><th title="Dates are the committer date of the first-parent commit, so a merged change is dated when it was merged.">From</th><th title="Dates are the committer date of the first-parent commit, so a merged change is dated when it was merged.">To</th><th>Direct</th><th>Manifest</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="?pkg=pkg%3Agolang%2Fgithub.com%2Fgin-gonic%2Fgin">pkg:golang/github.com/gin-gonic/gin</a></td><td>v1.9.0</td><td>2026-01-01</td><td>2026-01-11</td><td>yes</td><td>go.mod</td></tr>
+<tr class="open"><td><a href="?pkg=pkg%3Agolang%2Fgithub.com%2Fgin-gonic%2Fgin">pkg:golang/github.com/gin-gonic/gin</a></td><td>v1.10.0</td><td>2026-01-11</td><td>now</td><td>yes</td><td>go.mod</td></tr>
+<tr class="open"><td><a href="?pkg=pkg%3Agolang%2Fgithub.com%2FBurntSushi%2Ftoml">pkg:golang/github.com/BurntSushi/toml</a></td><td>v1.3.2</td><td>2026-01-01</td><td>now</td><td>no</td><td>go.mod</td></tr>
+<tr><td><a href="?pkg=pkg%3Adocker%2Flibrary%2Falpine">pkg:docker/library/alpine</a></td><td>(3.19)</td><td>2026-01-06</td><td>2026-01-21</td><td>?</td><td>deploy/Dockerfile</td></tr>
+</tbody>
+</table>
+<p class="note">Dates are the committer date of the first-parent commit, so a merged change is dated when it was merged.</p>
+</main>
+</body>
+</html>

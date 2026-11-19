@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repositories - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+<a href="/repos">Repositories</a>
+</nav>
+</header>
+<main>
+<h1>Repositories</h1>
+<table>
+<thead>
+<tr><th>Repository</th><th>URL</th><th>Branch</th><th>Last indexed commit</th><th>Last fetch (UTC)</th><th>Last fetch error</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="/repos/server">server</a></td><td>https://github.com/example-org/example-server.git</td><td>main</td><td><code>0123456789ab</code></td><td>2026-03-01 12:00</td><td class="reason"></td></tr>
+<tr><td><a href="/repos/web%20app">web app</a></td><td>https://github.com/example-org/example-web.git</td><td>trunk</td><td><code>abc</code></td><td>2026-03-01 13:30</td><td class="reason">git fetch: exit status 128: fatal: &#34;repo&#34; &lt;not&gt; found &amp; gone</td></tr>
+<tr><td><a href="/repos/fresh">fresh</a></td><td>https://github.com/example-org/example-fresh.git</td><td></td><td><code></code></td><td></td><td class="reason"></td></tr>
+</tbody>
+</table>
+</main>
+</body>
+</html>

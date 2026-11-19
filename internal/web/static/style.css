@@ -4,6 +4,7 @@
 	--line: #d1d9e0;
 	--bg: #ffffff;
 	--head-bg: #f6f8fa;
+	--open-bg: #eef6ee;
 }
 
 * { box-sizing: border-box; }
@@ -79,4 +80,48 @@ th {
 	color: var(--muted);
 	border: 1px dashed var(--line);
 	border-radius: 4px;
+}
+
+h2 {
+	font-size: 1.15rem;
+	margin: 1rem 0 0.25rem;
+	overflow-wrap: anywhere;
+}
+
+code {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.9em;
+}
+
+.meta {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: 0.25rem 1rem;
+	margin: 0 0 1rem;
+}
+
+.meta dt {
+	color: var(--muted);
+}
+
+.meta dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.filter {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem 1rem;
+	margin: 0 0 1rem;
+}
+
+tr.open {
+	background: var(--open-bg);
+}
+
+.note {
+	color: var(--muted);
+	font-size: 0.9rem;
 }

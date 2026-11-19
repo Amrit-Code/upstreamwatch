@@ -1,0 +1,17 @@
+{{define "content" -}}
+<h1>{{.Title}}</h1>
+{{if .Repos -}}
+<table>
+<thead>
+<tr><th>Repository</th><th>URL</th><th>Branch</th><th>Last indexed commit</th><th>Last fetch (UTC)</th><th>Last fetch error</th></tr>
+</thead>
+<tbody>
+{{range .Repos -}}
+<tr><td><a href="{{.Link}}">{{.Slug}}</a></td><td>{{.URL}}</td><td>{{.Branch}}</td><td><code>{{.Commit}}</code></td><td>{{.LastFetch}}</td><td class="reason">{{.FetchError}}</td></tr>
+{{end -}}
+</tbody>
+</table>
+{{- else -}}
+<p class="empty">No repositories indexed yet.</p>
+{{- end}}
+{{- end}}

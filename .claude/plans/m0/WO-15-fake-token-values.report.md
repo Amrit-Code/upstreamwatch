@@ -6,9 +6,9 @@ Files changed:
 - .claude/plans/m0/WO-15-fake-token-values.report.md (created)
 Commands run:
 - `git grep -nE -e 'github_pat_[A-Za-z0-9]' -e 'sk-ant-[A-Za-z0-9]' -e 'discord(app)?\.com/api/webhooks/[0-9]' -- ':!.claude/plans/m0/WO-15-fake-token-values.md' ':!.claude/skills' ':!mvp-plan' ':!docs'` (before the change) -> exit 0
-  internal/config/load_test.go:146:	const token = "github_pat_abcdefgh1234"
-  internal/config/load_test.go:229:	const literal = "github_pat_literal"
-  internal/model/secret_test.go:73:	const value = "github_pat_abcdefgh1234"
+  internal/config/load_test.go:146:	const token = "<old fake value>"
+  internal/config/load_test.go:229:	const literal = "<old fake literal>"
+  internal/model/secret_test.go:73:	const value = "<old fake value>"
 - same `git grep` (after the change) -> exit 1
   (no output)
 - `make check` -> exit 0
@@ -47,7 +47,7 @@ Commands run:
    M internal/config/load_test.go
    M internal/model/secret_test.go
 Decisions:
-- `github_pat_abcdefgh1234` -> `fake-token-abcdefgh1234` in both files: 23 characters as before, same last four (`1234`), so the `****1234` redaction assertions are unchanged.
-- `github_pat_literal` -> `fake-token-literal`: 18 characters as before. It is still a non-`${...}` value, so every TestLoad_RejectsLiteralSecret row still exercises literal rejection, and the not-echoed check still applies. The value is a plain YAML scalar in every row.
+- `<old fake value>` -> `fake-token-abcdefgh1234` in both files: 23 characters as before, same last four (`1234`), so the `****1234` redaction assertions are unchanged.
+- `<old fake literal>` -> `fake-token-literal`: 18 characters as before. It is still a non-`${...}` value, so every TestLoad_RejectsLiteralSecret row still exercises literal rejection, and the not-echoed check still applies. The value is a plain YAML scalar in every row.
 - No assertion was edited; only the three constant values changed.
 Outside scope: none. After the change the acceptance grep matches nothing anywhere in the tree, so no matches remain outside the owned files.

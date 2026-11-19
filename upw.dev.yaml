@@ -1,0 +1,16 @@
+# upw.dev.yaml — local development config. Everything not set here takes its
+# default; see deploy/upw.example.yaml for every key.
+data_dir: ./data-dev
+http:
+  listen: 127.0.0.1:8080
+
+targets: []
+
+llm:
+  enabled: false
+
+notify:
+  channels:
+    - type: stdout
+    # - type: discord_webhook
+    #   url: ${UPW_WEBHOOK_URL}

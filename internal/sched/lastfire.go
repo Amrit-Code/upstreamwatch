@@ -20,12 +20,12 @@ func LastFire(expr string, now time.Time) (t time.Time, ok bool, err error) {
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("parse cron expression %q: %w", expr, err)
 	}
-	// Next returns the first fire strictly after its argument, at a whole
-	// second, so starting one second early lets a fire exactly at the start
-	// of the window count.
-	start := now.Add(-lastFireWindow).Truncate(time.Second)
-	fire := schedule.Next(start.Add(-time.Second))
-	if fire.IsZero() || fire.After(now) {
+	// Next returns the first fire strictly after its argument, so starting
+	// one nanosecond before the cutoff lets a fire exactly at the cutoff
+	// count, and nothing older.
+	cutoff := now.Add(-lastFireWindow)
+	fire := schedule.Next(cutoff.Add(-time.Nanosecond))
+	if fire.IsZero() || fire.Before(cutoff) || fire.After(now) {
 		return time.Time{}, false, nil
 	}
 	for {

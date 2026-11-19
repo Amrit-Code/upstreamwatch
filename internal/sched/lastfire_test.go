@@ -31,6 +31,10 @@ func TestLastFire(t *testing.T) {
 		{name: "fire exactly 35 days back", expr: "0 8 12 10 *", now: time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC),
 			want: time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC), wantOK: true},
 		{name: "fire just over 35 days back", expr: "59 7 12 10 *", now: time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)},
+		{name: "fire 35 days and half a second back", expr: "0 8 12 10 *",
+			now: time.Date(2026, 11, 16, 8, 0, 0, 500_000_000, time.UTC)},
+		{name: "fire 35 days and one nanosecond back", expr: "0 8 12 10 *",
+			now: time.Date(2026, 11, 16, 8, 0, 0, 1, time.UTC)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

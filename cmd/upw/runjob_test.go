@@ -136,6 +136,28 @@ func TestRun_VulnsUsesLocalSources(t *testing.T) {
 	}
 }
 
+func TestRun_VulnsQueriesStoredInterval(t *testing.T) {
+	t.Parallel()
+	cfg := writeConfig(t, "")
+	// One open interval of a Go package, never queried before.
+	seedFindings(t, cfg)
+	before := vulnSourceHits.get("/v1/querybatch")
+	var stdout, stderr bytes.Buffer
+	args := []string{"run", "vulns", "-config", cfg}
+	if got, want := run(t.Context(), args, &stdout, &stderr, noEnv), 0; got != want {
+		t.Fatalf("run(%q) = %d, want %d; stdout %q; stderr %q", args, got, want, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{" intervals=1 ", " pairs_new=1 ", " query_refs=0 "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout = %q, want it to contain %q", out, want)
+		}
+	}
+	if vulnSourceHits.get("/v1/querybatch") <= before {
+		t.Error("local server got no querybatch request; the stored interval was not queried there")
+	}
+}
+
 func TestRun_FlagsAfterJobName(t *testing.T) {
 	t.Parallel()
 	cfg := writeConfig(t, "")

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -160,14 +161,25 @@ func (c *hitCounter) get(path string) int {
 var vulnSourceHits hitCounter
 
 // serveEmptyVulnSources answers like OSV, KEV and EPSS with nothing in them:
-// no querybatch results, empty modified_id.csv files, an empty KEV catalog
+// one empty querybatch result per query, empty modified_id.csv files, an empty KEV catalog
 // and an EPSS CSV with only its header. Anything else is 404.
 func serveEmptyVulnSources(w http.ResponseWriter, r *http.Request) {
 	vulnSourceHits.add(r.URL.Path)
 	switch p := r.URL.Path; {
 	case p == "/v1/querybatch":
+		// OSV answers with one result per query, in order; the client
+		// rejects any other count.
+		var req struct {
+			Queries []json.RawMessage `json:"queries"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad querybatch body", http.StatusBadRequest)
+			return
+		}
+		results := make([]struct{}, len(req.Queries))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[]}`)) // best effort: a failed write fails the test that caused it
+		// Best effort: a failed write fails the test that caused it.
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
 	case strings.HasPrefix(p, "/bucket/") && strings.HasSuffix(p, "/modified_id.csv"):
 		w.Header().Set("Content-Type", "text/csv")
 	case p == "/kev.json":

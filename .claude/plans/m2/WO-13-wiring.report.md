@@ -137,3 +137,55 @@ Outside scope:
 Concerns:
 - `cmd/upw/findings.go` and `internal/web/findings.go` each derive, independently, the job name from the `job_failure|<job>` fingerprint, the linked-match confidence and the version display. The two can drift. A shared helper would belong in `internal/model` (lead-owned). I left it duplicated.
 - `notifyStdout` is a package variable swapped by one serial test, as the WO allowed. A future parallel test that swaps it would race.
+
+## Fix round 2
+
+Review findings WO13-001 (with the lead's ruling), WO13-002 and WO13-003, on top of eb557e7.
+
+Status: DONE_WITH_CONCERNS
+Work order: .claude/plans/m2/WO-13-wiring.md
+Files changed (this round):
+- cmd/upw/joblock.go (modified)
+- cmd/upw/joblock_test.go (modified)
+- cmd/upw/jobs.go (modified)
+- cmd/upw/fakes_test.go (modified)
+- cmd/upw/runjob_test.go (modified)
+- internal/sched/lastfire.go (modified)
+- internal/sched/lastfire_test.go (modified)
+
+Fixes:
+- WO13-001: every job now takes the one lock `<data_dir>/locks/pipeline.lock`. `withJobLocks` became `withPipelineLock` and `acquireJobLock(ctx, dir, name, retry)` became `acquirePipelineLock(ctx, dir, retry)`. `lockedJob.Run` wraps a lock error as `job <name>: ...`, so the failing job is still named. The lock error texts now say "pipeline lock". New subtests in `TestJobLock_NoOverlap`:
+  - "different jobs never overlap": vulns, digest and timeline, each wrapped separately in its own Runner, three runs each, never more than one inside Run at once.
+  - "a different job waits for the held lock": digest does not start while the pipeline lock is held, and runs once it is released.
+  The old subtest "different jobs do not wait for each other" asserted the opposite behaviour, so I removed it. `TestJobLock_FileModes` now checks `pipeline.lock`.
+- WO13-002: `LastFire` keeps the exact cutoff `now - 35 days`. It starts `Next` one nanosecond before the cutoff and rejects a candidate before it. New cases: a fire 35 days and 500 ms back, and 35 days and 1 ns back, are both ok=false. The exact-boundary case still returns the fire. With the old truncating line restored temporarily, both new cases failed (`--- FAIL: TestLastFire/fire_35_days_and_half_a_second_back`, `.../fire_35_days_and_one_nanosecond_back`); the line is back to the fix.
+- WO13-003: the local OSV fixture decodes the querybatch body and answers one empty result per query. New `TestRun_VulnsQueriesStoredInterval` stores one open Go interval (via `seedFindings`), runs `upw run vulns` offline, and checks for `intervals=1`, `pairs_new=1`, `query_refs=0` and a querybatch request to the local server. With the fixture changed temporarily to return zero results, the test failed with `got 0 results for 1 queries`; the fixture is back to the fix.
+
+Commands run:
+- `make check` -> exit 0
+  ```
+  ==> gofmt
+  ==> vet
+  ==> build
+  ==> test
+  ok  	github.com/Amrit-Code/upstreamwatch/cmd/upw	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	(cached)
+  ... (every package ok)
+  ==> arch-lint
+  OK - No warnings found
+  ==> import-check
+  ```
+  The "(cached)" results are from the run just before, on the same files: `ok cmd/upw 2.472s`, `ok internal/sched 1.391s`.
+- `go test -race -count=3 -run 'JobLock|LastFire|VulnsQueries' ./cmd/upw/ ./internal/sched/` -> exit 0 (`ok cmd/upw 1.564s`, `ok internal/sched 1.901s`)
+- `go vet -tags e2e ./cmd/upw/` -> exit 0
+- `git status --porcelain` -> only the seven owned files above
+
+Decisions:
+- I renamed `withJobLocks` and `acquireJobLock` to match the single shared lock, so the names do not suggest a lock per job. `lockedJob` and `jobLockRetry` keep their names.
+
+Outside scope:
+- `docs/architecture.md` and any doc that describes "one lock file per job" (the M1 docs sync recorded `<data_dir>/locks/<job>.lock`) should now say one shared `<data_dir>/locks/pipeline.lock`. After an upgrade, the old per-job lock files stay in the locks directory, unused.
+
+Concerns:
+- With one shared lock, a long ingest or a timeline rebuild in `upw serve` makes a manual `upw run digest` wait until it finishes. The waiter polls every 200 ms and gives up only when its context ends (Ctrl-C). That is the intended effect of the ruling, but an operator may read it as a hang, because nothing is printed while waiting.
+- The round 1 concerns still stand.

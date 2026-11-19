@@ -13,21 +13,28 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/pipeline"
 )
 
-// jobLockRetry is how often a job waiting for its lock file tries again.
+// jobLockRetry is how often a job waiting for the pipeline lock tries again.
 const jobLockRetry = 200 * time.Millisecond
 
-// lockedJob runs a job while holding an exclusive flock on <dir>/<name>.lock.
-// The Runner serialises jobs within one process; the lock file does the same
-// across processes sharing a data directory, such as "upw run" beside
-// "upw serve".
+// pipelineLockFile is the name of the one lock file every job takes, in the
+// lock directory.
+const pipelineLockFile = "pipeline.lock"
+
+// lockedJob runs a job while holding an exclusive flock on
+// <dir>/pipeline.lock. Every job takes the same lock, so no two jobs run at
+// once on one data directory: the Runner serialises jobs within one process,
+// and the lock file does the same across processes, such as "upw run" beside
+// "upw serve". Jobs read what other jobs write (interval IDs, finding change
+// times), so even two different jobs must not overlap.
 type lockedJob struct {
 	job   pipeline.Job
 	dir   string
 	retry time.Duration
 }
 
-// withJobLocks wraps each job so that it runs under its lock file in dir.
-func withJobLocks(dir string, jobs []pipeline.Job) []pipeline.Job {
+// withPipelineLock wraps each job so that it runs under the pipeline lock
+// file in dir.
+func withPipelineLock(dir string, jobs []pipeline.Job) []pipeline.Job {
 	locked := make([]pipeline.Job, 0, len(jobs))
 	for _, j := range jobs {
 		locked = append(locked, &lockedJob{job: j, dir: dir, retry: jobLockRetry})
@@ -38,33 +45,33 @@ func withJobLocks(dir string, jobs []pipeline.Job) []pipeline.Job {
 // Name returns the wrapped job's name.
 func (j *lockedJob) Name() string { return j.job.Name() }
 
-// Run waits for the job's lock file, runs the job and releases the lock. If
+// Run waits for the pipeline lock, runs the job and releases the lock. If
 // ctx ends while it waits, it returns an error wrapping ctx.Err() without
 // running the job.
 func (j *lockedJob) Run(ctx context.Context, scope model.Scope) (stats model.Stats, err error) {
-	release, err := acquireJobLock(ctx, j.dir, j.job.Name(), j.retry)
+	release, err := acquirePipelineLock(ctx, j.dir, j.retry)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("job %s: %w", j.job.Name(), err)
 	}
 	defer func() { err = errors.Join(err, release()) }()
 	return j.job.Run(ctx, scope)
 }
 
-// acquireJobLock takes an exclusive flock on <dir>/<name>.lock, creating the
-// directory (mode 0700) and the file (mode 0600) when missing. A lock held
-// elsewhere is retried every retry until ctx ends. The returned function
-// releases the lock by closing the file.
-func acquireJobLock(ctx context.Context, dir, name string, retry time.Duration) (func() error, error) {
+// acquirePipelineLock takes an exclusive flock on <dir>/pipeline.lock,
+// creating the directory (mode 0700) and the file (mode 0600) when missing.
+// A lock held elsewhere is retried every retry until ctx ends. The returned
+// function releases the lock by closing the file.
+func acquirePipelineLock(ctx context.Context, dir string, retry time.Duration) (func() error, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create job lock directory: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, name+".lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, pipelineLockFile), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open job lock %s: %w", name, err)
+		return nil, fmt.Errorf("open pipeline lock: %w", err)
 	}
 	release := func() error {
 		if err := f.Close(); err != nil {
-			return fmt.Errorf("release job lock %s: %w", name, err)
+			return fmt.Errorf("release pipeline lock: %w", err)
 		}
 		return nil
 	}
@@ -75,7 +82,7 @@ func acquireJobLock(ctx context.Context, dir, name string, retry time.Duration) 
 			return release, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			return nil, errors.Join(fmt.Errorf("lock job %s: %w", name, err), release())
+			return nil, errors.Join(fmt.Errorf("take pipeline lock: %w", err), release())
 		}
 		// A blocking flock could not be interrupted by ctx, so the wait polls
 		// a non-blocking one instead.
@@ -83,7 +90,7 @@ func acquireJobLock(ctx context.Context, dir, name string, retry time.Duration) 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, errors.Join(fmt.Errorf("wait for job lock %s: %w", name, ctx.Err()), release())
+			return nil, errors.Join(fmt.Errorf("wait for pipeline lock: %w", ctx.Err()), release())
 		case <-timer.C:
 		}
 	}

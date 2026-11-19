@@ -44,9 +44,9 @@ var vulnSources vulnEndpoints
 // registeredJobs returns every job the Runner knows, in pipeline order:
 // ingest, timeline, vulns, digest, backup. Ingest and timeline share one git
 // client; the HTTP adapters share one httpx client that keeps its validators
-// in the store. Each job runs under its lock file in <data_dir>/locks, so two
-// processes on one data directory never run the same job at once.
-// Constructing them does no I/O. It returns an error, naming the channel and
+// in the store. Every job runs under the one lock file
+// <data_dir>/locks/pipeline.lock, so no two jobs, from any processes on one
+// data directory, run at once. Constructing them does no I/O. It returns an error, naming the channel and
 // never its secret, when a notify channel cannot be built.
 func registeredJobs(cfg config.Config, db *store.DB, logger *slog.Logger) ([]pipeline.Job, error) {
 	git := gitsrc.New(gitOptions(cfg), logger)
@@ -58,7 +58,7 @@ func registeredJobs(cfg config.Config, db *store.DB, logger *slog.Logger) ([]pip
 	if err != nil {
 		return nil, err
 	}
-	return withJobLocks(filepath.Join(cfg.DataDir, "locks"), []pipeline.Job{
+	return withPipelineLock(filepath.Join(cfg.DataDir, "locks"), []pipeline.Job{
 		ingest.NewService(git, db, ingest.Options{Targets: ingestTargets(cfg)}, logger),
 		timeline.NewService(git, db, db, extractors, unity.New(), timeline.Options{Targets: timelineTargets(cfg)}, logger),
 		vuln.NewService(

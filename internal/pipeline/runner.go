@@ -127,7 +127,7 @@ func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.
 	// echoed by an outside tool), so only its redacted text leaves the Runner.
 	var errText string
 	if jobErr != nil {
-		errText = redact(jobErr.Error())
+		errText = model.Redact(jobErr.Error())
 		run.Status = model.RunFailed
 		run.Error = errText
 	} else {

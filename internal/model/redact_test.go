@@ -1,4 +1,4 @@
-package pipeline
+package model
 
 import (
 	"strings"
@@ -53,8 +53,8 @@ func TestRedact(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := redact(tt.in); got != tt.want {
-				t.Errorf("redact(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := Redact(tt.in); got != tt.want {
+				t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

@@ -1,0 +1,32 @@
+# upstreamwatch on a single host. Copy this file, upw.yaml and .env (from
+# .env.example) into one directory and run `docker compose up -d` there.
+#
+# The mounted upw.yaml must set, for use inside the container:
+#   http.listen: 0.0.0.0:8080
+#   data_dir: /var/lib/upstreamwatch
+# ./data must be owned by 10001:10001 (the image's user), mode 700:
+#   chown -R 10001:10001 data && chmod 700 data
+
+services:
+  upw:
+    image: ghcr.io/amrit-code/upstreamwatch:${UPW_VERSION:-latest}
+    # Before the first tagged release, build from a clone of the repository
+    # instead of pulling: replace image: above with
+    # build:
+    #   context: ..
+    #   dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./upw.yaml:/etc/upstreamwatch/upw.yaml:ro
+      - ./data:/var/lib/upstreamwatch
+    # Published on the host's loopback only. Never change this to a bare
+    # "8080:8080": tailscale serve is the only way in.
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

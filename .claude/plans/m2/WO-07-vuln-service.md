@@ -90,3 +90,5 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-19 (lead), on concern 1: call `MarkQueried` for the new pairs only after the fetch phase, and only if every fetch of a querybatch ref succeeded (not-found counts as success). If any querybatch-ref fetch failed, mark none of this run's new pairs, so the next run queries them again and retries the fetch. Add a test: a transient fetch error on run 1 leaves the pairs unmarked; run 2 queries them again and fetches the advisory.
+- 2026-11-19 (lead), on concern 2: an in-scope slug with no stored intervals stays an error wrapping `model.ErrNotFound` (the CLI does not validate `-repo` yet; WO-13 or later can).

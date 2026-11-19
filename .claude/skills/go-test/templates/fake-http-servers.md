@@ -1,9 +1,9 @@
 # Template: fake HTTP servers for GitHub, OSV and deps.dev
 
-Use these when testing an adapter that calls an outside HTTP API. Each fake is an `http.Handler` served by `httptest.NewTLSServer(h)`. That gives https on loopback, which the URL policy's https-only rule accepts.
+Use these when testing an adapter that calls an outside HTTP API. Each fake is an `http.Handler` served by `httptest.NewServer(h)`. The server is plain http on loopback, which httpx accepts only because the test names `127.0.0.1` in `AllowPrivateHosts`.
 
 - Point the adapter's base URL at `srv.URL`.
-- Build its `httpx` client with the test policy from `outbound-client`, which permits loopback, trusting `srv.Certificate()`.
+- Build its `httpx` client with `httpx.New(nil, httpx.Options{AllowPrivateHosts: []string{"127.0.0.1"}}, logger)`. There is no test-only policy and no certificate to trust.
 - Call `t.Cleanup(srv.Close)`.
 
 The `newTestHTTPX` helper and the adapter constructors below show the shape, not a fixed API.
@@ -93,7 +93,7 @@ func TestGitHub_ListUpdated(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			srv := httptest.NewTLSServer(tt.fake)
+			srv := httptest.NewServer(tt.fake)
 			t.Cleanup(srv.Close)
 			src := github.New(github.Options{BaseURL: srv.URL, Token: "test-token"}, newTestHTTPX(t, srv), slog.New(slog.DiscardHandler))
 

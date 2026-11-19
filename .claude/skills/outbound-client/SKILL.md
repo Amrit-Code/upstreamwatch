@@ -50,7 +50,7 @@ Applied in the dialer, so it sees the address actually being connected to, after
 - Scheme `https` only, checked before the request and on each redirect. Reject URLs with userinfo.
 - The dialer's `Control` function parses the resolved `ip:port`, unmaps IPv4-mapped IPv6, and rejects: loopback, private (RFC 1918 and `fc00::/7`), link-local unicast and multicast (this covers the `169.254.169.254` metadata address), multicast, unspecified, and `100.64.0.0/10`. That last range is where tailnet addresses live and `netip.Addr.IsPrivate` does not cover it; without it, an upstream URL could reach other machines on the tailnet.
 - The only exception is the `allow_private_hosts` config setting for an endpoint the operator named (a self-hosted ntfy, a local model server). There is no code default and no bypass flag compiled into production paths.
-- Tests: httptest servers listen on loopback, so tests construct httpx with a policy that permits loopback. The production constructor takes no such option.
+- Tests: httptest servers listen on loopback, so tests construct httpx with `AllowPrivateHosts: []string{"127.0.0.1"}`, the same operator-facing exemption production has. An allowed host may use plain `http`, so tests use `httptest.NewServer`. There is no test-only bypass.
 
 ### Tokens
 

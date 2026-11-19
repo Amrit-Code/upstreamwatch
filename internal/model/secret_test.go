@@ -70,7 +70,7 @@ func TestSecret_RedactedInsideStruct(t *testing.T) {
 	type holder struct {
 		Token model.Secret
 	}
-	const value = "github_pat_abcdefgh1234"
+	const value = "fake-token-abcdefgh1234"
 	h := holder{Token: model.Secret(value)}
 	for _, verb := range []string{"%v", "%+v", "%#v"} {
 		if got := fmt.Sprintf(verb, h); strings.Contains(got, value) {

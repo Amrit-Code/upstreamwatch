@@ -143,7 +143,7 @@ func TestLoad_Example(t *testing.T) {
 		t.Errorf("GitHubUpstreamToken with no env = %q, want empty", got)
 	}
 
-	const token = "github_pat_abcdefgh1234"
+	const token = "fake-token-abcdefgh1234"
 	cfg, err = Load(path, envMap(map[string]string{"UPW_GITHUB_TOKEN_UPSTREAM": token}))
 	if err != nil {
 		t.Fatalf("Load(example, token set): %v", err)
@@ -226,7 +226,7 @@ func TestLoad_DevConfig(t *testing.T) {
 
 func TestLoad_RejectsLiteralSecret(t *testing.T) {
 	t.Parallel()
-	const literal = "github_pat_literal"
+	const literal = "fake-token-literal"
 	tests := []struct {
 		name  string
 		yaml  string

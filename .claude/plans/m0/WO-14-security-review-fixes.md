@@ -87,3 +87,6 @@ Follow the report contract in your agent definition: full report to the report f
 ## Rulings
 
 - 2026-11-19: `tailscale serve` forwards the original `Host`, which is the `http.base_url` host; that is why `BaseURL`'s host is in the allowed set. An operator who reaches the UI by another name sets `http.base_url` to it.
+- 2026-11-19 (fix round 1, Astra findings WO14-R1 and WO14-R2, both accepted):
+  - R1: header stripping must also hold when a caller attaches a cookie jar to the client from `HTTPClient()`. `net/http` adds jar cookies after `CheckRedirect`, so the allowlist is enforced again in `policyTransport.RoundTrip` for any request that belongs to a chain that has left the first request's host. The mark survives later hops, including a hop back to the first host. Tests: jar-backed cross-port redirect and A → B → A.
+  - R2: whether a 304 answers a conditional request is decided from the headers of the request that was actually answered (`resp.Request.Header` after redirects), not from the first request. A cross-host redirect that ends in a 304, where the final request carried no validator, is a `*StatusError`. Test it.

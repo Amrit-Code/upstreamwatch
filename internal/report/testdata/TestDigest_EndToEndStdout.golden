@@ -1,0 +1,20 @@
+upstreamwatch — 2026-03-07 — 3 new, 0 changed, 0 waiting for LLM budget
+
+NEW
+[A] critical  GO-2026-0102  pkg:golang/toolchain 1.26  (repo: example-server)
+     net/http: request smuggling via chunked encoding. Fixed in 1.26.4. KEV: yes. EPSS 0.43 (p87).
+     Exposed since 2026-03-02 (go.mod) — confidence medium (pinned since 2026-03-01)
+     https://upw.example.test/f/2
+
+[A] high  GO-2026-0101  pkg:golang/github.com/example-org/lib v1.2.0  (repo: example-server)
+     Parser [2J panics on crafted input Fixed in 1.2.5. KEV: no.
+     Exposed since 2026-03-03 (go.mod) — confidence high
+     https://upw.example.test/f/1
+
+[J] job ingest failed
+     job ingest failed: fetch example-server: exit status 128
+     https://upw.example.test/f/3
+
+Last runs: ingest 09:06 failed, vulns 09:12 ok.
+Open: 3, acked: 0, snoozed: 0.  https://upw.example.test/
+

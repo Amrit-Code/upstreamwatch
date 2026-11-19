@@ -50,3 +50,4 @@ Follow the report contract in your agent definition: full report to the report f
 ## Rulings
 
 - 2026-11-19: Accepted as built and not changed here: `-once` with a single job and `-repo` with `run all` are usage errors; doctor numbers notify channels by their position in the config; the pipeline integration tests advance a `synctest` fake clock with `time.Sleep`.
+- 2026-11-19 (answer to NEEDS_CONTEXT on requirement 3): rule (b). Keep decoding until `io.EOF`; a later document that is empty or null (a bare trailing `---`, `---` followed only by a comment, an explicit `~` or `null`, or several of these in a row) is ignored; any later document with content is the error `parse <path>: more than one YAML document`. Tests: content in a second document rejected; trailing `---`, trailing `---` plus comment, `...`, explicit `~`, and two empty documents all load.

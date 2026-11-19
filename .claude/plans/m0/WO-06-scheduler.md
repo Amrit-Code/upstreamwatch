@@ -104,3 +104,5 @@ Follow the report contract in your agent definition: full report to the report f
 ## Rulings
 
 - 2026-11-19: A failed job does not stop its chain. Each failure already raises its own `job_failure` finding through the Runner, and later jobs working from the last good data is the documented failure behaviour (`docs/external-sources.md`).
+- 2026-11-19 (fix round 1): `Stop` returns the wrapped `ctx.Err()` only if a chain is actually still running when `ctx` is done. If no chain is running, `Stop` returns nil whatever the state of `ctx`. Ticks that fire after `Stop` began start no chain.
+- 2026-11-19: Rejecting a `TZ=`/`CRON_TZ=` prefix and ending a chain on a panic are accepted as built.

@@ -8,25 +8,42 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/extract"
 	"github.com/Amrit-Code/upstreamwatch/internal/extract/unity"
 	"github.com/Amrit-Code/upstreamwatch/internal/gitsrc"
+	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
 	"github.com/Amrit-Code/upstreamwatch/internal/ingest"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
+	"github.com/Amrit-Code/upstreamwatch/internal/ops"
 	"github.com/Amrit-Code/upstreamwatch/internal/pipeline"
 	"github.com/Amrit-Code/upstreamwatch/internal/store"
 	"github.com/Amrit-Code/upstreamwatch/internal/timeline"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln/epss"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln/kev"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln/osv"
 )
 
-// registeredJobs returns every job the Runner knows, in pipeline order: the
-// ingest job, then the timeline job. Both share one git client. Each job runs
-// under its lock file in <data_dir>/locks, so two processes on one data
-// directory never run the same job at once. Constructing them does no I/O.
+// registeredJobs returns every job the Runner knows, in pipeline order:
+// ingest, timeline, vulns, backup. Ingest and timeline share one git client;
+// the HTTP adapters share one httpx client that keeps its validators in the
+// store. Each job runs under its lock file in <data_dir>/locks, so two
+// processes on one data directory never run the same job at once.
+// Constructing them does no I/O.
 func registeredJobs(cfg config.Config, db *store.DB, logger *slog.Logger) []pipeline.Job {
 	git := gitsrc.New(gitOptions(cfg), logger)
+	hc := httpx.New(db, httpx.Options{}, logger)
 	extractors := []timeline.Extractor{
 		extract.New(extract.Options{DeriveToolchainFromImages: cfg.Vulns.DeriveToolchainFromImages}, logger),
 	}
 	return withJobLocks(filepath.Join(cfg.DataDir, "locks"), []pipeline.Job{
 		ingest.NewService(git, db, ingest.Options{Targets: ingestTargets(cfg)}, logger),
 		timeline.NewService(git, db, db, extractors, unity.New(), timeline.Options{Targets: timelineTargets(cfg)}, logger),
+		vuln.NewService(
+			osv.New(hc, osv.Options{}, logger),
+			kev.New(hc, kev.Options{}, logger),
+			epss.New(hc, epss.Options{}, logger),
+			db, db, db,
+			vuln.Options{ExposureBasis: cfg.Vulns.ExposureBasis, EcosystemsExtra: cfg.Vulns.EcosystemsExtra},
+			logger),
+		ops.NewBackup(db, ops.BackupOptions{Dir: filepath.Join(cfg.DataDir, "backups"), Keep: cfg.Retention.BackupsKeep}, logger),
 	})
 }
 

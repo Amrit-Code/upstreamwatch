@@ -75,14 +75,18 @@ llm:
   rejudge_on_comment: false
 
 notify:
-  channels:                            # several can be enabled at once
+  # List any number of channels; the digest goes to every one of them.
+  # Several channels of one type are allowed: the second is recorded as
+  # <type>#2, the third <type>#3. A channel whose secret variable is unset
+  # is skipped with a warning.
+  channels:
     - type: discord_webhook            # email | discord_webhook | slack_webhook | ntfy | stdout
       url: ${UPW_WEBHOOK_URL}          # the URL is the secret
     # - type: email
     #   host: smtp.example.com
-    #   port: 587                      # default 587
+    #   port: 587                      # default 587; 465 means implicit TLS, others use STARTTLS
     #   username: upw@example.com
-    #   password: ${UPW_SMTP_PASSWORD}
+    #   password: ${UPW_SMTP_PASSWORD} # must be a ${NAME} environment reference; a literal value is rejected
     #   from: upw@example.com
     #   to: [you@example.com]
   heartbeat: "0 8 * * 1"               # weekly "all quiet" on Mondays

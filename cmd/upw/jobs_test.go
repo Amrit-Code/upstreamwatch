@@ -142,7 +142,7 @@ func TestRegisteredJobs_Order(t *testing.T) {
 			t.Errorf("job %s lock directory = %q, want %q", j.Name(), lj.dir, want)
 		}
 	}
-	if want := []string{"ingest", "timeline"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"ingest", "timeline", "vulns", "backup"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("registered job names = %q, want %q", got, want)
 	}
 }
@@ -154,15 +154,20 @@ func TestScheduleEntries_IngestChainRunsTimeline(t *testing.T) {
 		names = append(names, j.Name())
 	}
 	entries := scheduleEntries(config.Schedules{Ingest: "5 */6 * * *"}, names)
-	if got, want := entries[0].Name, "ingest"; got != want {
-		t.Fatalf("entries[0].Name = %q, want %q", got, want)
+	want := map[string][]string{
+		"ingest": {"ingest", "timeline"},
+		"vulns":  {"vulns"},
+		"issues": nil,
+		"llm":    nil,
+		"digest": nil,
+		"backup": {"backup"},
 	}
-	if got, want := entries[0].Jobs, []string{"ingest", "timeline"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("ingest chain = %q, want %q", got, want)
+	if len(entries) != len(want) {
+		t.Fatalf("scheduleEntries() returned %d entries, want %d", len(entries), len(want))
 	}
-	for _, e := range entries[1:] {
-		if len(e.Jobs) != 0 {
-			t.Errorf("schedule %s jobs = %q, want none registered", e.Name, e.Jobs)
+	for _, e := range entries {
+		if w, ok := want[e.Name]; !ok || !reflect.DeepEqual(e.Jobs, w) {
+			t.Errorf("schedule %s jobs = %q, want %q", e.Name, e.Jobs, w)
 		}
 	}
 }

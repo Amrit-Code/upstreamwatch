@@ -13,6 +13,8 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/issues/github"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln/epss"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln/kev"
 	"github.com/Amrit-Code/upstreamwatch/internal/vuln/osv"
 )
 
@@ -39,6 +41,8 @@ const (
 type namedCheck struct {
 	name    string
 	success string // the detail printed when the check passes
+	// checker is nil for an item with nothing to probe, which is reported
+	// ok with the success detail.
 	checker Checker
 }
 
@@ -63,9 +67,10 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer, get
 }
 
 // doctorChecks returns the network checks in report order: git, OSV,
-// deps.dev, then GitHub once per configured token, or once unauthenticated
-// when neither token is set. The checks share one httpx client with no cache
-// store, since none of them uses cached validators.
+// deps.dev, KEV, EPSS, then GitHub once per configured token, or once
+// unauthenticated when neither token is set, then one check per notify
+// channel. The checks share one httpx client with no cache store, since none
+// of them uses cached validators.
 func doctorChecks(cfg config.Config, logger *slog.Logger) []namedCheck {
 	hc := httpx.New(nil, httpx.Options{}, logger)
 	const githubOK = "api.github.com reachable"
@@ -73,6 +78,8 @@ func doctorChecks(cfg config.Config, logger *slog.Logger) []namedCheck {
 		{name: "git", success: "installed", checker: gitsrc.New(gitsrc.Options{}, logger)},
 		{name: "osv", success: "api.osv.dev reachable", checker: osv.New(hc, osv.Options{}, logger)},
 		{name: "deps.dev", success: "api.deps.dev reachable", checker: depsdev.New(hc, depsdev.Options{}, logger)},
+		{name: "kev", success: "www.cisa.gov reachable", checker: kev.New(hc, kev.Options{}, logger)},
+		{name: "epss", success: "epss.empiricalsecurity.com reachable", checker: epss.New(hc, epss.Options{}, logger)},
 	}
 	upstream, targets := cfg.Auth.GitHubUpstreamToken, cfg.Auth.GitHubTargetsToken
 	if upstream != "" {
@@ -87,8 +94,36 @@ func doctorChecks(cfg config.Config, logger *slog.Logger) []namedCheck {
 		checks = append(checks, namedCheck{name: "github", success: githubOK,
 			checker: github.New(hc, "", github.Options{}, logger)})
 	}
+	return append(checks, notifyChecks(cfg.Notify.Channels, hc, logger)...)
+}
+
+// notifyChecks returns one check per notify channel, named "notify <channel
+// name>", using the channel adapter's Check. A channel whose secret is unset
+// gets no check, since its secret line already warns. A channel that cannot
+// be built gets a check that fails with the reason.
+func notifyChecks(chs []config.Channel, hc *httpx.Client, logger *slog.Logger) []namedCheck {
+	var checks []namedCheck
+	for i, name := range channelNames(chs) {
+		if secretUnset(chs[i]) {
+			continue
+		}
+		// A stdout notifier built here is never sent to, so its writer does
+		// not matter.
+		n, err := newChannelNotifier(name, chs[i], hc, io.Discard, logger)
+		if err != nil {
+			checks = append(checks, namedCheck{name: "notify " + name, checker: failedCheck{err}})
+			continue
+		}
+		checks = append(checks, namedCheck{name: "notify " + name, success: n.success, checker: n.checker})
+	}
 	return checks
 }
+
+// failedCheck is the check of an item that could not be set up: it returns
+// the setup error.
+type failedCheck struct{ err error }
+
+func (f failedCheck) Check(context.Context) error { return f.err }
 
 // doctorReport writes one line for the config, one per secret and one per
 // check, running the checks one after another. A failed check does not stop
@@ -105,6 +140,10 @@ func doctorReport(ctx context.Context, w io.Writer, configPath string, cfg confi
 		write(l)
 	}
 	for _, c := range checks {
+		if c.checker == nil {
+			write(reportLine{statusOK, c.name, c.success})
+			continue
+		}
 		if err := c.checker.Check(ctx); err != nil {
 			// A check's error can carry text an outside service sent.
 			write(reportLine{statusFail, c.name, terminalSafeText(err.Error())})

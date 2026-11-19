@@ -6,7 +6,7 @@ Milestones M0 to M5 and their acceptance criteria live in `mvp-plan/PLAN.md`, se
 
 ## Where builds run
 
-Builds and tests run on the Mac with Go 1.27.x installed through Homebrew. The homelab VM is for deployment only. This replaces the dev loop in plan section 8, which put the Go toolchain on the VM. The `upw-deploy` skill covers deployment, and the owner's `homelab` skill stays the authority for the VM itself.
+Builds and tests run on the Mac with Go 1.27.x installed through Homebrew. The homelab VM is for deployment only. This replaces the dev loop in plan section 8, which put the Go toolchain on the VM. The `upw-deploy` skill covers deployment, and the owner's `homelab` skill stays the authority for the VM itself. By the owner's ruling of 2026-11-19, the Mac runs only `make check` (unit tests and lint); running the server, health checks and container checks happen on the homelab VM.
 
 ## Model routing
 

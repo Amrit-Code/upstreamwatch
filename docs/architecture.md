@@ -145,7 +145,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 | `internal/notify/email`, `discord`, `slack`, `ntfy`, `stdout` | 4 Adapter | One `Notifier` each. |
 | `internal/httpx` | between 4 and 5 | Shared HTTP client: ETags, rate limits, retries, URL policy. |
 | `internal/store` | 5 Store | `store.DB`, the migrations, transactions; the only `database/sql` user. |
-| `internal/config` | not drawn | Config loading, defaults and validation; only `cmd/upw` imports it. Default listen address `127.0.0.1:8080`; the container config sets `0.0.0.0:8080`. |
+| `internal/config` | not drawn | Config loading, defaults and validation (a file with a second YAML document that has content is rejected; empty or null later documents are ignored); only `cmd/upw` imports it. Default listen address `127.0.0.1:8080`; the container config sets `0.0.0.0:8080`. |
 | `internal/testutil` | not drawn | Test helpers such as the fixture git repo builder; no production package imports it. |
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.

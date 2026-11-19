@@ -113,3 +113,4 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-19 (lead), on the floating GitHub Actions tag concern: for `pkg:githubactions/...`, strip one leading `v`; a version with fewer than three numeric dot components (`v4`, `v4.1`) is floating: complete it with `.0` components to three (`4` → `4.0.0`, `4.1` → `4.1.0`) and return `exact = false`, the same treatment as a two-component toolchain version (confidence at most medium, the reason names it). A 40-hex commit SHA pin is exact but not comparable to semver ranges: skip the ranges (noted) and match only through the `versions` list. Add test rows for `v4`, `v4.1`, `v4.1.2` and a SHA, including ordering `v4` against a range `introduced 4.0.0, fixed 4.1.0` (affected, medium).

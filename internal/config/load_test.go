@@ -70,7 +70,7 @@ func wantDefaults(dataDir string) Config {
 		},
 		Notify:    Notify{Heartbeat: "0 8 * * 1"},
 		Retention: Retention{BackupsKeep: 7, IssuesClosedKeepDays: 730},
-		Git:       Git{MaxCloneMB: 2048, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute},
+		Git:       Git{MaxCloneMB: 2048, MaxBlobMB: 8, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute},
 	}
 }
 

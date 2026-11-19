@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,7 +15,7 @@ func TestLoad_GitDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := Git{MaxCloneMB: 2048, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute}
+	want := Git{MaxCloneMB: 2048, MaxBlobMB: 8, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute}
 	if cfg.Git != want {
 		t.Errorf("Git = %+v, want %+v", cfg.Git, want)
 	}
@@ -22,12 +23,12 @@ func TestLoad_GitDefaults(t *testing.T) {
 
 func TestLoad_GitSet(t *testing.T) {
 	t.Parallel()
-	const yaml = "git:\n  max_clone_mb: 512\n  clone_timeout: 1h30m\n  fetch_timeout: ${FETCH}\n"
+	const yaml = "git:\n  max_clone_mb: 512\n  max_blob_mb: 1\n  clone_timeout: 1h30m\n  fetch_timeout: ${FETCH}\n"
 	cfg, err := loadString(t, yaml, envMap(map[string]string{"FETCH": "45s"}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := Git{MaxCloneMB: 512, CloneTimeout: 90 * time.Minute, FetchTimeout: 45 * time.Second}
+	want := Git{MaxCloneMB: 512, MaxBlobMB: 1, CloneTimeout: 90 * time.Minute, FetchTimeout: 45 * time.Second}
 	if cfg.Git != want {
 		t.Errorf("Git = %+v, want %+v", cfg.Git, want)
 	}
@@ -42,6 +43,8 @@ func TestLoad_GitValidation(t *testing.T) {
 	}{
 		{name: "max_clone_mb zero", yaml: "git:\n  max_clone_mb: 0\n", want: "git.max_clone_mb: must be at least 1, got 0"},
 		{name: "max_clone_mb negative", yaml: "git:\n  max_clone_mb: -5\n", want: "git.max_clone_mb: must be at least 1, got -5"},
+		{name: "max_blob_mb zero", yaml: "git:\n  max_blob_mb: 0\n", want: "git.max_blob_mb: must be at least 1, got 0"},
+		{name: "max_blob_mb negative", yaml: "git:\n  max_blob_mb: -1\n", want: "git.max_blob_mb: must be at least 1, got -1"},
 		{name: "clone_timeout unparseable", yaml: "git:\n  clone_timeout: soon\n", want: `git.clone_timeout: "soon" is not a duration`},
 		{name: "clone_timeout no unit", yaml: "git:\n  clone_timeout: \"30\"\n", want: `git.clone_timeout: "30" is not a duration`},
 		{name: "clone_timeout empty", yaml: "git:\n  clone_timeout: \"\"\n", want: `git.clone_timeout: "" is not a duration`},
@@ -71,12 +74,12 @@ func TestLoad_GitValidation(t *testing.T) {
 
 func TestLoad_GitReportsEveryProblem(t *testing.T) {
 	t.Parallel()
-	const yaml = "git:\n  max_clone_mb: 0\n  clone_timeout: x\n  fetch_timeout: 0s\n"
+	const yaml = "git:\n  max_clone_mb: 0\n  max_blob_mb: 0\n  clone_timeout: x\n  fetch_timeout: 0s\n"
 	_, err := loadString(t, yaml, noEnv)
 	if err == nil {
 		t.Fatal("Load error = nil, want an error")
 	}
-	for _, want := range []string{"git.max_clone_mb:", "git.clone_timeout:", "git.fetch_timeout:"} {
+	for _, want := range []string{"git.max_clone_mb:", "git.max_blob_mb:", "git.clone_timeout:", "git.fetch_timeout:"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Load error = %q, want it to contain %q", err, want)
 		}
@@ -234,13 +237,23 @@ func TestLoad_TokenHostSkipsUnparseableURL(t *testing.T) {
 
 func TestLoad_ExampleDocumentsGitAndPrivateHosts(t *testing.T) {
 	t.Parallel()
-	cfg, err := Load(filepath.Join("..", "..", "deploy", "upw.example.yaml"), noEnv)
+	path := filepath.Join("..", "..", "deploy", "upw.example.yaml")
+	cfg, err := Load(path, noEnv)
 	if err != nil {
 		t.Fatalf("Load(example): %v", err)
 	}
-	want := Git{MaxCloneMB: 2048, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute}
+	want := Git{MaxCloneMB: 2048, MaxBlobMB: 8, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute}
 	if cfg.Git != want {
 		t.Errorf("example Git = %+v, want %+v", cfg.Git, want)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read example: %v", err)
+	}
+	for _, key := range []string{"max_clone_mb:", "max_blob_mb:", "clone_timeout:", "fetch_timeout:"} {
+		if !strings.Contains(string(raw), "\n  "+key) {
+			t.Errorf("example does not document git.%s", strings.TrimSuffix(key, ":"))
+		}
 	}
 	for _, tgt := range cfg.Targets {
 		if tgt.AllowPrivateHosts {

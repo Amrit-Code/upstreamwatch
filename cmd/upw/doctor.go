@@ -106,7 +106,8 @@ func doctorReport(ctx context.Context, w io.Writer, configPath string, cfg confi
 	}
 	for _, c := range checks {
 		if err := c.checker.Check(ctx); err != nil {
-			write(reportLine{statusFail, c.name, err.Error()})
+			// A check's error can carry text an outside service sent.
+			write(reportLine{statusFail, c.name, terminalSafeText(err.Error())})
 			continue
 		}
 		write(reportLine{statusOK, c.name, c.success})

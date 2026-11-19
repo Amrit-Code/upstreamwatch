@@ -126,6 +126,9 @@ func (c Config) validate() []error {
 	if c.Git.MaxCloneMB < 1 {
 		add("git.max_clone_mb: must be at least 1, got %d", c.Git.MaxCloneMB)
 	}
+	if c.Git.MaxBlobMB < 1 {
+		add("git.max_blob_mb: must be at least 1, got %d", c.Git.MaxBlobMB)
+	}
 
 	return errs
 }

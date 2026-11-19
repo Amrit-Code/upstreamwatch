@@ -17,13 +17,14 @@ func TestGitOptions_Strict(t *testing.T) {
 	dataDir := filepath.Join("srv", "upw-data")
 	cfg := config.Config{
 		DataDir: dataDir,
-		Git:     config.Git{MaxCloneMB: 512, CloneTimeout: 45 * time.Minute, FetchTimeout: 5 * time.Minute},
+		Git:     config.Git{MaxCloneMB: 512, MaxBlobMB: 3, CloneTimeout: 45 * time.Minute, FetchTimeout: 5 * time.Minute},
 	}
 	got := gitOptions(cfg)
 	want := gitsrc.Options{
 		ReposDir:      filepath.Join(dataDir, "repos"),
 		HomeDir:       filepath.Join(dataDir, "git-home"),
 		MaxCloneBytes: 512 * 1024 * 1024,
+		MaxBlobBytes:  3 * 1024 * 1024,
 		CloneTimeout:  45 * time.Minute,
 		FetchTimeout:  5 * time.Minute,
 	}
@@ -49,6 +50,9 @@ func TestGitOptions_DefaultConfig(t *testing.T) {
 	got := gitOptions(cfg)
 	if want := int64(2048) << 20; got.MaxCloneBytes != want {
 		t.Errorf("MaxCloneBytes = %d, want %d", got.MaxCloneBytes, want)
+	}
+	if want := int64(8) << 20; got.MaxBlobBytes != want {
+		t.Errorf("MaxBlobBytes = %d, want %d", got.MaxBlobBytes, want)
 	}
 	if got.CloneTimeout != 30*time.Minute || got.FetchTimeout != 10*time.Minute {
 		t.Errorf("timeouts = %v, %v; want 30m0s, 10m0s", got.CloneTimeout, got.FetchTimeout)
@@ -124,10 +128,19 @@ func TestTimelineTargets(t *testing.T) {
 func TestRegisteredJobs_Order(t *testing.T) {
 	t.Parallel()
 	// The constructors only keep the store; a nil one is never called here.
-	jobs := registeredJobs(config.Config{DataDir: t.TempDir()}, nil, slog.New(slog.DiscardHandler))
+	dataDir := t.TempDir()
+	jobs := registeredJobs(config.Config{DataDir: dataDir}, nil, slog.New(slog.DiscardHandler))
 	var got []string
 	for _, j := range jobs {
 		got = append(got, j.Name())
+		lj, ok := j.(*lockedJob)
+		if !ok {
+			t.Errorf("job %s is %T, want it wrapped in its lock file", j.Name(), j)
+			continue
+		}
+		if want := filepath.Join(dataDir, "locks"); lj.dir != want {
+			t.Errorf("job %s lock directory = %q, want %q", j.Name(), lj.dir, want)
+		}
 	}
 	if want := []string{"ingest", "timeline"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("registered job names = %q, want %q", got, want)

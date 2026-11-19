@@ -25,7 +25,8 @@ const usage = `usage: upw <command> [flags]
 
 commands:
   serve     run the scheduler and the web UI until interrupted
-  run       run one job, or every job once with "run all -once"
+  run       run one job, or every job once with "run all -once";
+            "run timeline -rebuild" rebuilds stored timelines from the start
   timeline  print a repo's dependency intervals
   doctor    check the config, secrets, git and the outside services
   help      print this help
@@ -65,7 +66,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		fmt.Fprintf(stderr, "upw: unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+	return exitCode(err, stderr)
+}
 
+// exitCode turns a command's error into the exit code, printing the error to
+// stderr unless the command already reported it. The text is passed through
+// terminalSafeText, because job errors carry text a remote controls, such as
+// git's stderr.
+func exitCode(err error, stderr io.Writer) int {
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return 0
@@ -74,7 +82,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	case errors.Is(err, errReported):
 		return 1
 	default:
-		fmt.Fprintf(stderr, "upw: %v\n", err)
+		fmt.Fprintf(stderr, "upw: %s\n", terminalSafeText(err.Error()))
 		return 1
 	}
 }

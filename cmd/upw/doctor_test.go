@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,18 +80,8 @@ func doctor(t *testing.T, args []string, env map[string]string, checks func(conf
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	err := cmdDoctor(t.Context(), args, &stdout, &stderr, envOf(env), checks)
-	switch {
-	case err == nil, errors.Is(err, flag.ErrHelp):
-		return 0, stdout.String(), stderr.String()
-	case errors.Is(err, errReported):
-		return 1, stdout.String(), stderr.String()
-	case errors.Is(err, errUsage):
-		return 2, stdout.String(), stderr.String()
-	default:
-		// run prints the error to stderr and exits 1.
-		fmt.Fprintf(&stderr, "upw: %v\n", err)
-		return 1, stdout.String(), stderr.String()
-	}
+	code := exitCode(err, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
 const reportConfig = `auth:
@@ -225,6 +215,23 @@ func TestDoctor_ExitCodes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDoctor_FailureIsTerminalSafe(t *testing.T) {
+	t.Parallel()
+	cfg := writeConfig(t, "")
+	const raw = "api.example.invalid: \x1b]0;owned\x07 status 500"
+	checks := fixedChecks(namedCheck{name: "osv", success: "api.osv.dev reachable", checker: fakeChecker{err: errors.New(raw)}})
+	code, stdout, _ := doctor(t, []string{"-config", cfg}, nil, checks)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if want := "fail  osv                     " + strconv.Quote(raw) + "\n"; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+	}
+	if strings.ContainsAny(stdout, "\x1b\x07") {
+		t.Errorf("stdout holds a raw control character: %q", stdout)
 	}
 }
 

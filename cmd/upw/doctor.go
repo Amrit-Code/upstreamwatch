@@ -70,7 +70,7 @@ func doctorChecks(cfg config.Config, logger *slog.Logger) []namedCheck {
 	hc := httpx.New(nil, httpx.Options{}, logger)
 	const githubOK = "api.github.com reachable"
 	checks := []namedCheck{
-		{name: "git", success: "installed", checker: gitsrc.New(logger)},
+		{name: "git", success: "installed", checker: gitsrc.New(gitsrc.Options{}, logger)},
 		{name: "osv", success: "api.osv.dev reachable", checker: osv.New(hc, osv.Options{}, logger)},
 		{name: "deps.dev", success: "api.deps.dev reachable", checker: depsdev.New(hc, depsdev.Options{}, logger)},
 	}

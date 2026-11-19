@@ -100,9 +100,9 @@ The remaining structs (`Vulns`, `Upstream`, `Prefilter`, `LLM`, `Notify`, `Reten
 ## Tests to include
 
 - `TestLoad_Defaults`: a file containing only `data_dir: x` → every default in requirement 2 is set.
-- `TestLoad_Example`: `deploy/upw.example.yaml` with an empty `getenv` → no error; with `UPW_GITHUB_TOKEN_UPSTREAM=github_pat_abcdefgh1234` → `cfg.Auth.GitHubUpstreamToken.Reveal()` is that value and `fmt.Sprint` of it is `****1234`.
+- `TestLoad_Example`: `deploy/upw.example.yaml` with an empty `getenv` → no error; with `UPW_GITHUB_TOKEN_UPSTREAM=fake-token-abcdefgh1234` → `cfg.Auth.GitHubUpstreamToken.Reveal()` is that value and `fmt.Sprint` of it is `****1234`.
 - `TestLoad_DevConfig`: `upw.dev.yaml` loads.
-- `TestLoad_RejectsLiteralSecret`: `auth.github_upstream_token: github_pat_literal` → error names the field and does not contain `github_pat_literal`.
+- `TestLoad_RejectsLiteralSecret`: `auth.github_upstream_token: fake-token-literal` → error names the field and does not contain `fake-token-literal`.
 - `TestLoad_TargetScheme`: first target `url: file:///tmp/x` → error contains `targets[0].url` and `"file"`. Also `ssh://`, `git://`, `http://`, and a URL with `user:pass@`.
 - `TestLoad_ReportsAllProblems`: a file with three independent problems → the error contains all three.
 - `TestLoad_UnknownKey`: `htpp: {}` → error.

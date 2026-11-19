@@ -23,6 +23,9 @@ type TargetRepo struct {
 	// LastIndexedSHA is the branch commit the timeline was last built to;
 	// empty before the first timeline run.
 	LastIndexedSHA string
+	// TimelineSettings is the fingerprint of the indexing settings the
+	// stored timeline was built with; empty before the first timeline run.
+	TimelineSettings string
 	// LastFetchAt is the last fetch attempt, successful or not; zero before
 	// the first. LastFetchError is that attempt's error text, empty on
 	// success.
@@ -224,6 +227,8 @@ type TimelineUpdate struct {
 	Intervals []DepInterval
 	// IndexedSHA becomes the repo's last indexed commit.
 	IndexedSHA string
+	// Settings becomes the repo's timeline settings fingerprint.
+	Settings string
 }
 
 // ManifestInfo is the ecosystem and kind of one manifest path.

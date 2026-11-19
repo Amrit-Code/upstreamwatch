@@ -133,7 +133,7 @@ type heartbeat struct {
 
 type embed struct {
 	Title       string `json:"title"`
-	Description string `json:"description"`
+	Description string `json:"description,omitempty"`
 	URL         string `json:"url,omitempty"`
 }
 

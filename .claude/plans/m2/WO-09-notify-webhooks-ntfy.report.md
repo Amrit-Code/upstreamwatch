@@ -1,4 +1,4 @@
-Status: BLOCKED
+Status: DONE
 Work order: .claude/plans/m2/WO-09-notify-webhooks-ntfy.md
 Files changed:
 - internal/notify/discord/doc.go (created)
@@ -90,3 +90,67 @@ and has no body field. The adapters may not build their own `http.Client`, and h
 - What would unblock it is one of these:
   (a) A lead-owned change to httpx: add `Body []byte` to `StatusError` (the first 200 bytes, or a capped excerpt) and fill it in `Client.statusError` from the drained body. Each notifier would then add `": " + string(se.Body)` before `model.Redact`. Callers that read `StatusError` (`osv`, `depsdev`, `github`, `kev`, `epss`) would be unaffected unless they print it. Note that an excerpt in `StatusError.Error()` would reach every adapter's error text; adding the field without changing `Error()` avoids that.
   (b) A ruling that drops the body excerpt from requirement 5 and accepts `discord: post to <host>: status <n>` as implemented now. Under this ruling the work is complete as it stands.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-09-notify-webhooks-ntfy.md (the 2026-11-19 ruling drops requirement 5's body excerpt, which resolves the blocker above; the errors stand as built)
+Files changed:
+- internal/notify/discord/notifier.go (modified)
+- internal/notify/discord/notifier_test.go (modified)
+- internal/notify/slack/notifier.go (modified)
+- internal/notify/slack/notifier_test.go (modified)
+- internal/notify/ntfy/title_internal_test.go (created)
+- .claude/plans/m2/WO-09-notify-webhooks-ntfy.report.md (modified)
+Commands run:
+- `go test -race -count=1 -cover ./internal/notify/...` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	1.271s	coverage: 97.8% of statements
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/ntfy	1.270s	coverage: 98.3% of statements
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	1.269s	coverage: 93.5% of statements
+- `make check` -> exit 0
+  (last 30 lines)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/issues/github	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/model	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	1.257s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/ntfy	1.257s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	1.257s
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/ops	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/query	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/report	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/testutil/gitrepo	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/timeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/vuln	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race ./internal/notify/discord/ ./internal/notify/slack/ ./internal/notify/ntfy/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/ntfy	(cached)
+- `git status --porcelain` -> exit 0 (run before this section was written)
+   M internal/notify/discord/notifier.go
+   M internal/notify/discord/notifier_test.go
+   M internal/notify/slack/notifier.go
+   M internal/notify/slack/notifier_test.go
+  ?? internal/notify/ntfy/title_internal_test.go
+Decisions:
+- Finding 1 (Slack section cap): `maxSectionRunes = 2900`. Within that cap the detail lines are cut first, ending with `…` on a rune boundary, so the bold headline and the `<url|Open>` link stay whole. Only a headline that is too long by itself cuts the whole text to 2,900 runes. A cut can split an escape entity such as `&amp;`; Slack then shows the leftover as literal text, which is harmless. Test: `TestSlackSend_SectionCap`, two cases (long lines of two-byte runes with a link; an oversize headline). Each checks exactly 2,900 runes, valid UTF-8, and the prefix and suffix.
+- Finding 2 (Discord): `description` is now `omitempty`. Test: `TestDiscordSend_ItemWithoutLines`. The Discord golden file is unchanged, because every item in it has lines.
+- Finding 3 (ntfy): `TestASCIITitle` sits in an internal test file (`package ntfy`), because `Digest.Subject()` cannot produce non-ASCII text other than the em dash. It has 5 cases, including "other non-ascii dropped".
+Outside scope: unchanged from the main report, except that the httpx body item is closed by the ruling.

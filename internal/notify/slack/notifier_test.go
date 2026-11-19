@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -320,6 +321,52 @@ func TestNew(t *testing.T) {
 			}
 			if err != nil && strings.Contains(err.Error(), "example-secret-token") {
 				t.Errorf("New() error %q names the webhook path", err)
+			}
+		})
+	}
+}
+
+func TestSlackSend_SectionCap(t *testing.T) {
+	t.Parallel()
+	const findingURL = "https://upw.example.com/f/1"
+	tests := []struct {
+		name       string
+		item       model.DigestItem
+		wantPrefix string
+		wantSuffix string
+	}{
+		{
+			name:       "long lines are cut, headline and link kept",
+			item:       model.DigestItem{Tag: "[A]", Headline: "high  GO-2026-4866", Lines: []string{strings.Repeat("é", 5000)}, URL: findingURL},
+			wantPrefix: "*[A] high  GO-2026-4866*\né",
+			wantSuffix: "é…\n<" + findingURL + "|Open>",
+		},
+		{
+			name:       "headline too long on its own",
+			item:       model.DigestItem{Tag: "[A]", Headline: strings.Repeat("x", 4000), Lines: []string{"detail"}, URL: findingURL},
+			wantPrefix: "*[A] xxx",
+			wantSuffix: "x…",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWebhook(t, http.StatusOK)
+			n := newNotifier(t, w, io.Discard)
+			d := model.Digest{GeneratedAt: generatedAt(), New: []model.DigestItem{tt.item}}
+
+			if err := n.Send(t.Context(), d); err != nil {
+				t.Fatalf("Send() error = %v", err)
+			}
+			got := decode(t, w.requests()[0].body).Blocks[1].Text.Text
+			if runes := utf8.RuneCountInString(got); runes != 2900 {
+				t.Errorf("section text is %d runes, want 2900", runes)
+			}
+			if !utf8.ValidString(got) {
+				t.Error("section text is not valid UTF-8")
+			}
+			if !strings.HasPrefix(got, tt.wantPrefix) || !strings.HasSuffix(got, tt.wantSuffix) {
+				t.Errorf("section text = %.40q…%q, want prefix %q and suffix %q", got, got[max(0, len(got)-40):], tt.wantPrefix, tt.wantSuffix)
 			}
 		})
 	}

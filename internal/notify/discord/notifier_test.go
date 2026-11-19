@@ -429,3 +429,21 @@ func TestNew(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscordSend_ItemWithoutLines(t *testing.T) {
+	t.Parallel()
+	w := newWebhook(t, http.StatusNoContent, "")
+	n := newNotifier(t, w, io.Discard)
+	d := model.Digest{GeneratedAt: generatedAt(), New: []model.DigestItem{{Tag: "[J]", Headline: "job vulns failed"}}}
+
+	if err := n.Send(t.Context(), d); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	body := w.requests()[0].body
+	if bytes.Contains(body, []byte(`"description"`)) {
+		t.Errorf("body = %s, want no description for an item without lines", body)
+	}
+	if got := decode(t, body).Embeds[0].Title; got != "[J] job vulns failed" {
+		t.Errorf("title = %q, want %q", got, "[J] job vulns failed")
+	}
+}

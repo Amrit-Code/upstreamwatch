@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -22,7 +23,10 @@ const (
 	// header and context blocks a message has at most 22 blocks, under
 	// Slack's limit of 50.
 	maxSections = 20
-	ellipsis    = "…"
+	// maxSectionRunes caps one section's text, under the 3,000 characters
+	// Slack accepts.
+	maxSectionRunes = 2900
+	ellipsis        = "…"
 )
 
 // Notifier posts the digest to one Slack incoming webhook through the shared
@@ -153,16 +157,42 @@ func buildMessage(d model.Digest) message {
 // sectionText lays out one item as mrkdwn: the bold tag and headline, the
 // detail lines, and a link to the finding when it has a URL. Tag, Headline
 // and Lines are escaped, which stops upstream text from forming links or
-// mentions.
+// mentions. The text is capped at maxSectionRunes: the detail lines are cut
+// first so the headline and link stay whole, and only a headline too long
+// on its own cuts the whole text.
 func sectionText(it model.DigestItem) string {
-	parts := []string{"*" + escape(it.Tag+" "+it.Headline) + "*"}
+	head := "*" + escape(it.Tag+" "+it.Headline) + "*"
+	var lines, link string
 	if len(it.Lines) > 0 {
-		parts = append(parts, escape(strings.Join(it.Lines, "\n")))
+		lines = "\n" + escape(strings.Join(it.Lines, "\n"))
 	}
 	if it.URL != "" {
-		parts = append(parts, "<"+it.URL+"|Open>")
+		link = "\n<" + it.URL + "|Open>"
 	}
-	return strings.Join(parts, "\n")
+	room := maxSectionRunes - utf8.RuneCountInString(head) - utf8.RuneCountInString(link)
+	if room < 0 {
+		return capRunes(head+lines+link, maxSectionRunes)
+	}
+	return head + capRunes(lines, room) + link
+}
+
+// capRunes returns s cut to at most limit runes, ending a cut text with
+// "…". A limit below one rune leaves nothing.
+func capRunes(s string, limit int) string {
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	if limit < 1 {
+		return ""
+	}
+	n := 0
+	for i := range s {
+		if n == limit-1 {
+			return s[:i] + ellipsis
+		}
+		n++
+	}
+	return s
 }
 
 // escaper replaces the three characters Slack treats as control characters

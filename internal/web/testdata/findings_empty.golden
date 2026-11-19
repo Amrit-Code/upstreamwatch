@@ -16,6 +16,22 @@
 </header>
 <main>
 <h1>Findings</h1>
+<form class="filter" method="get" action="/">
+<label>Repository <select name="repo">
+<option value="">All repositories</option>
+<option value="example-client">example-client</option>
+<option value="example-server">example-server</option>
+</select></label>
+<label>Kind <select name="kind">
+<option value="">All kinds</option>
+<option value="advisory">advisory</option>
+<option value="issue">issue</option>
+<option value="job_failure">job_failure</option>
+</select></label>
+<label><input type="checkbox" name="suppressed" value="1"> Show snoozed and dismissed</label>
+<button type="submit">Filter</button>
+<a href="/">Clear filters</a>
+</form>
 <p class="empty">No open findings.</p>
 </main>
 </body>

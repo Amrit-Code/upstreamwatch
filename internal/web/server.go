@@ -34,12 +34,14 @@ type Options struct {
 	BaseURL string // the configured http.base_url; may be empty
 }
 
-// Server is the web UI: the findings page, the repo and timeline pages, the
-// health endpoint and the stylesheet, behind the security-header middleware,
-// the host check and the cross-origin check.
+// Server is the web UI: the findings list, the finding page and its state
+// forms, the repo and timeline pages, the health endpoint and the stylesheet,
+// behind the security-header middleware, the host check and the cross-origin
+// check.
 type Server struct {
 	health   HealthReader
 	findings FindingsReader
+	actions  FindingActions
 	timeline TimelineReader
 	opts     Options
 	logger   *slog.Logger
@@ -47,7 +49,8 @@ type Server struct {
 	inner    http.Handler // the mux behind the cross-origin check
 	handler  http.Handler
 
-	shutdownTimeout time.Duration // defaultShutdownTimeout; tests shorten it
+	now             func() time.Time // time.Now; tests fix it
+	shutdownTimeout time.Duration    // defaultShutdownTimeout; tests shorten it
 }
 
 // NewServer parses every embedded template and builds the handler. Requests
@@ -56,7 +59,7 @@ type Server struct {
 // is a loopback address) and the host of BaseURL. It returns an error when a
 // template fails to parse or BaseURL is not an absolute http or https URL. It
 // does not listen.
-func NewServer(health HealthReader, findings FindingsReader, timeline TimelineReader, opts Options, logger *slog.Logger) (*Server, error) {
+func NewServer(health HealthReader, findings FindingsReader, actions FindingActions, timeline TimelineReader, opts Options, logger *slog.Logger) (*Server, error) {
 	pages, err := parsePages(templateFS)
 	if err != nil {
 		return nil, err
@@ -64,16 +67,23 @@ func NewServer(health HealthReader, findings FindingsReader, timeline TimelineRe
 	s := &Server{
 		health:   health,
 		findings: findings,
+		actions:  actions,
 		timeline: timeline,
 		opts:     opts,
 		logger:   logger,
 		pages:    pages,
 
+		now:             time.Now,
 		shutdownTimeout: defaultShutdownTimeout,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleFindings)
+	mux.HandleFunc("GET /f/{id}", s.handleFinding)
+	mux.HandleFunc("POST /f/{id}/ack", s.handleAck)
+	mux.HandleFunc("POST /f/{id}/snooze", s.handleSnooze)
+	mux.HandleFunc("POST /f/{id}/dismiss", s.handleDismiss)
+	mux.HandleFunc("POST /f/{id}/reopen", s.handleReopen)
 	mux.HandleFunc("GET /repos", s.handleRepos)
 	mux.HandleFunc("GET /repos/{slug}", s.handleTimeline)
 	mux.HandleFunc("GET /health", s.handleHealth)
@@ -177,7 +187,7 @@ func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 		return nil, fmt.Errorf("parse layout template: %w", err)
 	}
 	pages := make(map[string]*template.Template)
-	for _, name := range []string{"findings", "repos", "timeline", "error"} {
+	for _, name := range []string{"findings", "finding", "repos", "timeline", "error"} {
 		clone, err := base.Clone()
 		if err != nil {
 			return nil, fmt.Errorf("clone layout for %s: %w", name, err)

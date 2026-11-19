@@ -24,9 +24,13 @@ type TimelineStore interface {
 	ListIntervals(ctx context.Context, repoID int64) ([]model.DepInterval, error)
 }
 
-// FindingStore reads findings with their state.
+// FindingStore reads findings with their state and everything shown with
+// them.
 type FindingStore interface {
-	// ListOpenFindings returns unresolved findings whose state is open or
-	// acked, highest score first, then lowest ID.
-	ListOpenFindings(ctx context.Context) ([]model.Finding, error)
+	// ListFindings returns the unresolved findings that pass f, highest
+	// score first, then lowest ID. f.Now must be set.
+	ListFindings(ctx context.Context, f model.FindingFilter) ([]model.Finding, error)
+	// GetFindingDetail returns the finding with this ID and everything shown
+	// with it, or an error wrapping model.ErrNotFound.
+	GetFindingDetail(ctx context.Context, id int64) (model.FindingDetail, error)
 }

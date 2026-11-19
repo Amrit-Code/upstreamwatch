@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Findings - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+<a href="/repos">Repositories</a>
+</nav>
+</header>
+<main>
+<h1>Findings</h1>
+<form class="filter" method="get" action="/">
+<label>Repository <select name="repo">
+<option value="">All repositories</option>
+<option value="example-client">example-client</option>
+<option value="example-server">example-server</option>
+</select></label>
+<label>Kind <select name="kind">
+<option value="">All kinds</option>
+<option value="advisory">advisory</option>
+<option value="issue">issue</option>
+<option value="job_failure">job_failure</option>
+</select></label>
+<label><input type="checkbox" name="suppressed" value="1" checked> Show snoozed and dismissed</label>
+<button type="submit">Filter</button>
+<a href="/">Clear filters</a>
+</form>
+<table>
+<thead>
+<tr><th class="num">Score</th><th>Kind</th><th>Repository</th><th>Package and version</th><th>Advisory or job</th><th>Severity</th><th>Confidence</th><th>State</th><th>First seen (UTC)</th></tr>
+</thead>
+<tbody>
+<tr><td class="num">50.0</td><td><a href="/f/7">job_failure</a></td><td></td><td class="wrap"></td><td class="wrap">ingest</td><td></td><td></td><td>open</td><td>2026-03-01 12:00</td></tr>
+<tr><td class="num">8.4</td><td><a href="/f/12">advisory</a></td><td>example-server</td><td class="wrap">pkg:golang/github.com/example-org/example-lib <span class="version">v1.2.0</span></td><td class="wrap">GHSA-xxxx-yyyy-zzzz</td><td>high</td><td>medium</td><td>acked</td><td>2026-02-27 12:00</td></tr>
+<tr><td class="num">5.0</td><td><a href="/f/10">advisory</a></td><td>example-server</td><td class="wrap">pkg:golang/github.com/example-org/example-lib</td><td class="wrap">GO-2026-0002</td><td>unknown</td><td></td><td>open</td><td>2026-02-26 12:00</td></tr>
+<tr><td class="num">3.2</td><td><a href="/f/9">advisory</a></td><td>example-client</td><td class="wrap">pkg:npm/example-widget <span class="version">(^2.0.0)</span></td><td class="wrap">GHSA-dddd-eeee-ffff</td><td>low</td><td>low</td><td>dismissed</td><td>2026-02-25 12:00</td></tr>
+</tbody>
+</table>
+</main>
+</body>
+</html>

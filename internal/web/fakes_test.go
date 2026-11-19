@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/query"
@@ -30,16 +33,110 @@ func (f *fakeHealth) LastRuns(ctx context.Context) ([]model.Run, error) {
 	return f.runs, nil
 }
 
+// fakeFindings is a FindingsReader over canned details. Like the store, it
+// leaves out findings whose state at t0 is snoozed or dismissed unless the
+// filter asks for suppressed ones; it ignores the repo and kind fields, which
+// it only records.
 type fakeFindings struct {
-	findings []model.Finding
-	err      error
+	details   []model.FindingDetail
+	err       error
+	detailErr error
+
+	mu         sync.Mutex
+	gotFilters []model.FindingFilter
+	gotIDs     []int64
 }
 
-func (f *fakeFindings) OpenFindings(ctx context.Context) ([]model.Finding, error) {
+func (f *fakeFindings) Findings(ctx context.Context, flt model.FindingFilter) ([]model.FindingDetail, error) {
+	f.mu.Lock()
+	f.gotFilters = append(f.gotFilters, flt)
+	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.findings, nil
+	var out []model.FindingDetail
+	for _, d := range f.details {
+		switch d.Finding.State.Effective(t0) {
+		case model.StateSnoozed, model.StateDismissed:
+			if !flt.Suppressed {
+				continue
+			}
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (f *fakeFindings) FindingDetail(ctx context.Context, id int64) (model.FindingDetail, error) {
+	f.mu.Lock()
+	f.gotIDs = append(f.gotIDs, id)
+	f.mu.Unlock()
+	if f.detailErr != nil {
+		return model.FindingDetail{}, f.detailErr
+	}
+	for _, d := range f.details {
+		if d.Finding.ID == id {
+			return d, nil
+		}
+	}
+	return model.FindingDetail{}, fmt.Errorf("finding %d: %w", id, model.ErrNotFound)
+}
+
+// filters returns the filters Findings was called with.
+func (f *fakeFindings) filters() []model.FindingFilter {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.gotFilters)
+}
+
+// actionCall is one call to a FindingActions method.
+type actionCall struct {
+	Method string
+	ID     int64
+	For    time.Duration // Snooze only
+	Note   string
+	By     string
+}
+
+// fakeActions is a FindingActions that records every call and returns err.
+type fakeActions struct {
+	err error
+
+	mu    sync.Mutex
+	calls []actionCall
+}
+
+func (f *fakeActions) record(c actionCall) (model.FindingState, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, c)
+	f.mu.Unlock()
+	if f.err != nil {
+		return model.FindingState{}, f.err
+	}
+	return model.FindingState{State: model.StateAcked}, nil
+}
+
+func (f *fakeActions) Ack(ctx context.Context, id int64, note, by string) (model.FindingState, error) {
+	return f.record(actionCall{Method: "Ack", ID: id, Note: note, By: by})
+}
+
+func (f *fakeActions) Snooze(ctx context.Context, id int64, d time.Duration, note, by string) (model.FindingState, error) {
+	return f.record(actionCall{Method: "Snooze", ID: id, For: d, Note: note, By: by})
+}
+
+func (f *fakeActions) Dismiss(ctx context.Context, id int64, note, by string) (model.FindingState, error) {
+	return f.record(actionCall{Method: "Dismiss", ID: id, Note: note, By: by})
+}
+
+func (f *fakeActions) Reopen(ctx context.Context, id int64, by string) (model.FindingState, error) {
+	return f.record(actionCall{Method: "Reopen", ID: id, By: by})
+}
+
+// recorded returns the calls made so far.
+func (f *fakeActions) recorded() []actionCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
 }
 
 // fakeTimeline is a TimelineReader returning canned values and recording the
@@ -73,28 +170,46 @@ func (f *fakeTimeline) Timeline(ctx context.Context, slug string, filter query.T
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// newTestServer builds a Server with the given fakes and an empty timeline
-// reader, failing the test on a construction error.
+// slogTo returns a logger writing text records to w.
+func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+// newTestServer builds a Server with the given fakes, no-op finding actions
+// and an empty timeline reader, failing the test on a construction error.
 func newTestServer(t *testing.T, h web.HealthReader, f web.FindingsReader) *web.Server {
 	t.Helper()
 	return newTimelineServer(t, h, f, &fakeTimeline{})
 }
 
-// newTimelineServer builds a Server with the given fakes, failing the test on
-// a construction error.
+// newTimelineServer builds a Server with the given fakes and no-op finding
+// actions, failing the test on a construction error.
 func newTimelineServer(t *testing.T, h web.HealthReader, f web.FindingsReader, tl web.TimelineReader) *web.Server {
 	t.Helper()
-	s, err := web.NewServer(h, f, tl, web.Options{Listen: "127.0.0.1:0"}, discardLogger())
+	return newServer(t, h, f, &fakeActions{}, tl, discardLogger())
+}
+
+// newFindingsServer builds a Server around the findings fakes and tl, with
+// its clock fixed at t0, failing the test on a construction error.
+func newFindingsServer(t *testing.T, f web.FindingsReader, a web.FindingActions, tl web.TimelineReader, logger *slog.Logger) *web.Server {
+	t.Helper()
+	return newServer(t, &fakeHealth{}, f, a, tl, logger)
+}
+
+// newServer builds a Server around the given fakes, with its clock fixed at
+// t0, failing the test on a construction error.
+func newServer(t *testing.T, h web.HealthReader, f web.FindingsReader, a web.FindingActions, tl web.TimelineReader, logger *slog.Logger) *web.Server {
+	t.Helper()
+	s, err := web.NewServer(h, f, a, tl, web.Options{Listen: "127.0.0.1:0"}, logger)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
+	web.SetNow(s, func() time.Time { return t0 })
 	return s
 }
 
 // newLoggingTimelineServer builds a Server around tl that logs to logs.
 func newLoggingTimelineServer(t *testing.T, tl web.TimelineReader, logs io.Writer) *web.Server {
 	t.Helper()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, tl, web.Options{Listen: "127.0.0.1:0"},
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, tl, web.Options{Listen: "127.0.0.1:0"},
 		slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)

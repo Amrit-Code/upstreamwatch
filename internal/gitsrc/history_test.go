@@ -365,3 +365,118 @@ func TestHeadAndIsAncestor(t *testing.T) {
 		t.Error("IsAncestor(option) = nil error, want an error")
 	}
 }
+
+func TestOnFirstParentChain(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	root := up.Commit("root", day(1))
+	up.Branch("side")
+	side := up.Commit("side", day(2))
+	up.Switch("main")
+	mainline := up.Commit("mainline", day(3))
+	merge := up.Merge("side", "merge side", day(4))
+	// A branch that is never fetched: its commit is unknown to the clone.
+	up.Branch("unfetched")
+	unknown := up.Commit("unfetched", day(5))
+	up.Switch("main")
+	g, repo := syncFixture(t, up, testOptions(t))
+
+	tests := []struct {
+		name   string
+		commit string
+		want   bool
+	}{
+		{"head itself", merge, true},
+		{"first parent of head", mainline, true},
+		{"first-parent ancestor", root, true},
+		{"second-parent-only ancestor", side, false},
+		{"unknown commit", unknown, false},
+		{"all-zero object name", strings.Repeat("0", 40), false},
+		{"abbreviated name", merge[:12], false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := g.OnFirstParentChain(t.Context(), repo, tt.commit, merge)
+			if err != nil || got != tt.want {
+				t.Errorf("OnFirstParentChain(%s) = %v, %v, want %v, nil", tt.name, got, err, tt.want)
+			}
+		})
+	}
+
+	// Before the merge the side commit is on no chain of main either.
+	if got, err := g.OnFirstParentChain(t.Context(), repo, side, mainline); err != nil || got {
+		t.Errorf("OnFirstParentChain(side, mainline) = %v, %v, want false, nil", got, err)
+	}
+
+	missing := repo
+	missing.ClonePath = t.TempDir() + "/nope.git"
+	errTests := []struct {
+		name string
+		repo model.TargetRepo
+		head string
+		want string
+	}{
+		{"unknown head", repo, unknown, "run git rev-list"},
+		{"option as head", repo, "--all", "revision"},
+		{"empty head", repo, "", "revision"},
+		{"missing clone", missing, merge, "clone missing"},
+	}
+	for _, tt := range errTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := g.OnFirstParentChain(t.Context(), tt.repo, root, tt.head)
+			if err == nil || got || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("OnFirstParentChain(head %q) = %v, %v, want false and an error containing %q", tt.head, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestOnFirstParentChain_PrunedAfterForcePush: after a force-push whose old
+// history was collected, the old head is simply not on the new chain.
+func TestOnFirstParentChain_PrunedAfterForcePush(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", "module example.com/app\n")
+	old := up.Commit("old history", day(1))
+	g, repo := syncFixture(t, up, testOptions(t))
+
+	up.Git("checkout", "--quiet", "--orphan", "rewrite")
+	up.Write("go.mod", "module example.com/rewritten\n")
+	newHead := up.Commit("unrelated history", day(2))
+	up.Git("branch", "-M", "rewrite", "main")
+	if _, err := g.Sync(t.Context(), model.TargetRepo{Slug: "fixture", URL: up.URL(), Branch: "main"}); err != nil {
+		t.Fatalf("Sync() after force-push error = %v", err)
+	}
+	collectUnreachable(t, repo.ClonePath)
+
+	got, err := g.OnFirstParentChain(t.Context(), repo, old, newHead)
+	if err != nil || got {
+		t.Errorf("OnFirstParentChain(pruned old head, new head) = %v, %v, want false, nil", got, err)
+	}
+}
+
+// TestOnFirstParentChain_LogCap: the listing is bounded by MaxLogBytes, but
+// a match found before the cap still counts.
+func TestOnFirstParentChain_LogCap(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	var commits []string
+	for i := range 5 {
+		commits = append(commits, up.Commit(fmt.Sprintf("c%d", i), day(1+i)))
+	}
+	head := commits[len(commits)-1]
+	opts := testOptions(t)
+	opts.MaxLogBytes = 100 // two 41-byte lines and a bit
+	g, repo := syncFixture(t, up, opts)
+
+	if got, err := g.OnFirstParentChain(t.Context(), repo, commits[3], head); err != nil || !got {
+		t.Errorf("OnFirstParentChain(second line) = %v, %v, want true, nil", got, err)
+	}
+	got, err := g.OnFirstParentChain(t.Context(), repo, commits[0], head)
+	if err == nil || got || !strings.Contains(err.Error(), "git rev-list output exceeded the") {
+		t.Errorf("OnFirstParentChain(past the cap) = %v, %v, want false and the cap error", got, err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,18 +73,19 @@ type commitsCall struct {
 }
 
 type fakeGit struct {
-	heads       map[string]string // by slug
-	headErr     error
-	notAncestor bool
-	shortRead   bool                      // ReadBlobs drops the last blob of every call
-	readErrOn   int                       // ReadBlobs call number (1-based) that fails; 0 never
-	commits     map[string][]model.Commit // by slug
-	blobs       map[model.BlobRef]model.Blob
+	heads     map[string]string // by slug
+	headErr   error
+	offChain  bool                      // OnFirstParentChain reports false
+	chainErr  error                     // OnFirstParentChain fails
+	shortRead bool                      // ReadBlobs drops the last blob of every call
+	readErrOn int                       // ReadBlobs call number (1-based) that fails; 0 never
+	commits   map[string][]model.Commit // by slug
+	blobs     map[model.BlobRef]model.Blob
 
-	headCalls     []string
-	ancestorCalls []string
-	commitCalls   []commitsCall
-	readCalls     [][]model.BlobRef
+	headCalls   []string
+	chainCalls  []string
+	commitCalls []commitsCall
+	readCalls   [][]model.BlobRef
 }
 
 func (f *fakeGit) Head(ctx context.Context, repo model.TargetRepo) (string, error) {
@@ -94,9 +96,12 @@ func (f *fakeGit) Head(ctx context.Context, repo model.TargetRepo) (string, erro
 	return f.heads[repo.Slug], nil
 }
 
-func (f *fakeGit) IsAncestor(ctx context.Context, repo model.TargetRepo, ancestor, commit string) (bool, error) {
-	f.ancestorCalls = append(f.ancestorCalls, ancestor+".."+commit)
-	return !f.notAncestor, nil
+func (f *fakeGit) OnFirstParentChain(ctx context.Context, repo model.TargetRepo, commit, head string) (bool, error) {
+	f.chainCalls = append(f.chainCalls, commit+".."+head)
+	if f.chainErr != nil {
+		return false, f.chainErr
+	}
+	return !f.offChain, nil
 }
 
 func (f *fakeGit) ManifestCommits(ctx context.Context, repo model.TargetRepo, from, to string, patterns []string) ([]model.Commit, error) {
@@ -414,12 +419,12 @@ func TestRun_NoNewCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(git.commitCalls) != 0 || len(git.readCalls) != 0 || len(git.ancestorCalls) != 0 {
-		t.Errorf("git calls: ManifestCommits %d, ReadBlobs %d, IsAncestor %d, want 0 each",
-			len(git.commitCalls), len(git.readCalls), len(git.ancestorCalls))
+	if len(git.commitCalls) != 0 || len(git.readCalls) != 0 || len(git.chainCalls) != 0 {
+		t.Errorf("git calls: ManifestCommits %d, ReadBlobs %d, OnFirstParentChain %d, want 0 each",
+			len(git.commitCalls), len(git.readCalls), len(git.chainCalls))
 	}
-	if len(ts.applied) != 0 || len(ts.listCalls) != 0 {
-		t.Errorf("store calls: ApplyTimeline %d, ListEvents %d, want 0 each", len(ts.applied), len(ts.listCalls))
+	if len(ts.applied) != 0 || len(ts.listCalls) != 1 {
+		t.Errorf("store calls: ApplyTimeline %d, ListEvents %d, want 0 and 1 (stored events are checked against the current rules)", len(ts.applied), len(ts.listCalls))
 	}
 	checkStats(t, got, map[string]int64{"targets": 1})
 }
@@ -450,8 +455,8 @@ func TestRun_Incremental(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if want := []string{"c1..c2"}; !reflect.DeepEqual(git.ancestorCalls, want) {
-		t.Errorf("IsAncestor calls = %v, want %v", git.ancestorCalls, want)
+	if want := []string{"c1..c2"}; !reflect.DeepEqual(git.chainCalls, want) {
+		t.Errorf("OnFirstParentChain calls = %v, want %v", git.chainCalls, want)
 	}
 	if len(git.commitCalls) != 1 || git.commitCalls[0].from != "c1" || git.commitCalls[0].to != "c2" {
 		t.Errorf("ManifestCommits calls = %+v, want one from c1 to c2", git.commitCalls)
@@ -539,9 +544,9 @@ func TestRun_RewrittenHistory(t *testing.T) {
 	repo := testRepo(1, "alpha")
 	repo.LastIndexedSHA = "old"
 	git := &fakeGit{
-		heads:       map[string]string{"alpha": "n1"},
-		notAncestor: true,
-		commits:     map[string][]model.Commit{"alpha": {n1}},
+		heads:    map[string]string{"alpha": "n1"},
+		offChain: true,
+		commits:  map[string][]model.Commit{"alpha": {n1}},
 	}
 	git.file(n1, "go.mod", "pkg:golang/a@v2.0.0")
 	ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: {
@@ -576,6 +581,214 @@ func TestRun_RewrittenHistory(t *testing.T) {
 	checkStats(t, got, map[string]int64{
 		"targets": 1, "resets": 1, "commits_walked": 1, "files_read": 1, "events_written": 1, "intervals": 1,
 	})
+}
+
+func TestRun_Rebuild(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod")
+	c2 := commit("c2", 2, "go.mod")
+	a1 := fdep("pkg:golang/a", "golang", "v1.0.0")
+	a2 := fdep("pkg:golang/a", "golang", "v1.1.0")
+	alpha, beta := testRepo(1, "alpha"), testRepo(2, "beta")
+	alpha.LastIndexedSHA, beta.LastIndexedSHA = "c2", "c2"
+	newGit := func() *fakeGit {
+		git := &fakeGit{
+			heads:   map[string]string{"alpha": "c2", "beta": "c2"},
+			commits: map[string][]model.Commit{"alpha": {c1, c2}, "beta": {c1, c2}},
+		}
+		git.file(c1, "go.mod", "pkg:golang/a@v1.0.0")
+		git.file(c2, "go.mod", "pkg:golang/a@v1.1.0")
+		return git
+	}
+	newStore := func() *fakeTimelineStore {
+		// The stored events are stale: a rebuild must not read them.
+		stale := []model.DepEvent{event(c1, "go.mod", fdep("pkg:golang/old", "golang", "v0.1.0"), model.ChangeAdded, "")}
+		return &fakeTimelineStore{events: map[int64][]model.DepEvent{1: stale, 2: stale}}
+	}
+	repos := &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": alpha, "beta": beta}}
+	opts := Options{Targets: []TargetSettings{{Slug: "alpha"}, {Slug: "beta"}}}
+	wantUpdate := func(id int64) model.TimelineUpdate {
+		return model.TimelineUpdate{
+			RepoID:    id,
+			Reset:     true,
+			Commits:   []model.Commit{c1, c2},
+			Manifests: map[string]model.ManifestInfo{"go.mod": {Ecosystem: "golang", Kind: model.ManifestKindManifest}},
+			Events: []model.DepEvent{
+				event(c1, "go.mod", a1, model.ChangeAdded, ""),
+				event(c2, "go.mod", a2, model.ChangeChanged, "v1.0.0"),
+			},
+			Intervals: []model.DepInterval{
+				interval("go.mod", a1, c1, &c2),
+				interval("go.mod", a2, c2, nil),
+			},
+			IndexedSHA: "c2",
+		}
+	}
+
+	t.Run("every target although the head did not move", func(t *testing.T) {
+		t.Parallel()
+		git, ts := newGit(), newStore()
+		s := NewService(git, repos, ts, []Extractor{goExtractor()}, nil, opts, discard())
+
+		got, err := s.Run(t.Context(), model.Scope{Rebuild: true})
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if len(ts.listCalls) != 0 || len(git.chainCalls) != 0 {
+			t.Errorf("ListEvents calls %v, OnFirstParentChain calls %v, want none on a rebuild", ts.listCalls, git.chainCalls)
+		}
+		for _, c := range git.commitCalls {
+			if c.from != "" || c.to != "c2" {
+				t.Errorf("ManifestCommits call = %+v, want from the root to c2", c)
+			}
+		}
+		if want := []model.TimelineUpdate{wantUpdate(1), wantUpdate(2)}; !reflect.DeepEqual(ts.applied, want) {
+			t.Errorf("ApplyTimeline updates =\n%+v\nwant\n%+v", ts.applied, want)
+		}
+		checkStats(t, got, map[string]int64{
+			"targets": 2, "resets": 2, "commits_walked": 4, "files_read": 4, "events_written": 4, "intervals": 4,
+		})
+	})
+
+	t.Run("one repo in scope", func(t *testing.T) {
+		t.Parallel()
+		git, ts := newGit(), newStore()
+		s := NewService(git, repos, ts, []Extractor{goExtractor()}, nil, opts, discard())
+
+		got, err := s.Run(t.Context(), model.Scope{RepoSlug: "beta", Rebuild: true})
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if u := onlyApply(t, ts); !reflect.DeepEqual(u, wantUpdate(2)) {
+			t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, wantUpdate(2))
+		}
+		checkStats(t, got, map[string]int64{
+			"targets": 1, "resets": 1, "commits_walked": 2, "files_read": 2, "events_written": 2, "intervals": 2,
+		})
+	})
+}
+
+func TestRun_RetroactiveExclusion(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod", "examples/go.mod", "Dockerfile")
+	a1 := fdep("pkg:golang/a", "golang", "v1.0.0")
+	b1 := fdep("pkg:golang/b", "golang", "v1.0.0")
+	img := fdep("pkg:docker/golang", "docker", "1.27")
+	stored := []model.DepEvent{
+		event(c1, "Dockerfile", img, model.ChangeAdded, ""),
+		event(c1, "examples/go.mod", b1, model.ChangeAdded, ""),
+		event(c1, "go.mod", a1, model.ChangeAdded, ""),
+	}
+
+	tests := []struct {
+		name          string
+		settings      TargetSettings
+		wantIntervals []model.DepInterval
+	}{
+		{
+			name:     "path now excluded",
+			settings: TargetSettings{Slug: "alpha", ExcludePaths: []string{"examples"}},
+			wantIntervals: []model.DepInterval{
+				interval("Dockerfile", img, c1, nil),
+				interval("go.mod", a1, c1, nil),
+			},
+		},
+		{
+			name:     "ecosystem removed from the allowlist",
+			settings: TargetSettings{Slug: "alpha", Ecosystems: []string{"golang"}},
+			wantIntervals: []model.DepInterval{
+				interval("go.mod", a1, c1, nil),
+				interval("examples/go.mod", b1, c1, nil),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo := testRepo(1, "alpha")
+			repo.LastIndexedSHA = "c1"
+			git := &fakeGit{heads: map[string]string{"alpha": "c1"}}
+			ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: slices.Clone(stored)}}
+			s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
+				[]Extractor{goExtractor(), dockerExtractor()}, nil,
+				Options{Targets: []TargetSettings{tt.settings}}, discard())
+
+			got, err := s.Run(t.Context(), model.Scope{})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if len(git.commitCalls) != 0 || len(git.readCalls) != 0 || len(git.chainCalls) != 0 {
+				t.Errorf("git calls: ManifestCommits %d, ReadBlobs %d, OnFirstParentChain %d, want 0 each: the head did not move",
+					len(git.commitCalls), len(git.readCalls), len(git.chainCalls))
+			}
+			want := model.TimelineUpdate{
+				RepoID:     1,
+				Commits:    []model.Commit{},
+				Manifests:  map[string]model.ManifestInfo{},
+				Intervals:  tt.wantIntervals,
+				IndexedSHA: "c1",
+			}
+			if u := onlyApply(t, ts); !reflect.DeepEqual(u, want) {
+				t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
+			}
+			checkStats(t, got, map[string]int64{"targets": 1, "intervals": 2})
+		})
+	}
+
+	t.Run("filtered stored state is diffed against new commits", func(t *testing.T) {
+		t.Parallel()
+		c2 := commit("c2", 2, "go.mod", "Dockerfile")
+		repo := testRepo(1, "alpha")
+		repo.LastIndexedSHA = "c1"
+		git := &fakeGit{
+			heads:   map[string]string{"alpha": "c2"},
+			commits: map[string][]model.Commit{"alpha": {c2}},
+		}
+		git.file(c2, "go.mod", "pkg:golang/a@v1.1.0")
+		git.file(c2, "Dockerfile", "pkg:docker/golang@1.27")
+		ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: slices.Clone(stored)}}
+		s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
+			[]Extractor{goExtractor(), dockerExtractor()}, nil,
+			Options{Targets: []TargetSettings{{Slug: "alpha", Ecosystems: []string{"golang"}, ExcludePaths: []string{"examples"}}}}, discard())
+
+		if _, err := s.Run(t.Context(), model.Scope{}); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		u := onlyApply(t, ts)
+		a2 := fdep("pkg:golang/a", "golang", "v1.1.0")
+		// The Dockerfile is filtered out both as stored state and as new
+		// content, so it produces no removal and no addition.
+		if want := []model.DepEvent{event(c2, "go.mod", a2, model.ChangeChanged, "v1.0.0")}; !reflect.DeepEqual(u.Events, want) {
+			t.Errorf("Events = %+v, want %+v", u.Events, want)
+		}
+		wantIntervals := []model.DepInterval{
+			interval("go.mod", a1, c1, &c2),
+			interval("go.mod", a2, c2, nil),
+		}
+		if !reflect.DeepEqual(u.Intervals, wantIntervals) {
+			t.Errorf("Intervals = %+v, want %+v", u.Intervals, wantIntervals)
+		}
+	})
+}
+
+func TestRun_ChainCheckErrorFailsTarget(t *testing.T) {
+	t.Parallel()
+	repo := testRepo(1, "alpha")
+	repo.LastIndexedSHA = "c1"
+	git := &fakeGit{heads: map[string]string{"alpha": "c2"}, chainErr: errors.New("rev-list died")}
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
+		[]Extractor{goExtractor()}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	want := "timeline: 1 of 1 targets failed: alpha: check first-parent chain: rev-list died"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Run() error = %v, want %q", err, want)
+	}
+	if len(ts.applied) != 0 || len(git.commitCalls) != 0 {
+		t.Errorf("ApplyTimeline calls %d, ManifestCommits calls %d, want 0 each", len(ts.applied), len(git.commitCalls))
+	}
+	checkStats(t, got, map[string]int64{"targets": 1, "failed": 1})
 }
 
 func TestRun_UnityAndAllowlist(t *testing.T) {
@@ -788,8 +1001,8 @@ func TestRun_OneTargetFails(t *testing.T) {
 func TestRun_FailureInLaterBlobChunkKeepsCounters(t *testing.T) {
 	t.Parallel()
 	var commits []model.Commit
-	git := &fakeGit{heads: map[string]string{"alpha": "c32"}, readErrOn: 2}
-	for i := range 33 {
+	git := &fakeGit{heads: map[string]string{"alpha": "c8"}, readErrOn: 2}
+	for i := range 9 {
 		c := commit(fmt.Sprintf("c%d", i), 1, "go.mod")
 		commits = append(commits, c)
 		git.file(c, "go.mod", fmt.Sprintf("pkg:golang/a@v1.0.%d", i))
@@ -808,7 +1021,7 @@ func TestRun_FailureInLaterBlobChunkKeepsCounters(t *testing.T) {
 		t.Errorf("ApplyTimeline called %d times, want 0", len(ts.applied))
 	}
 	checkStats(t, got, map[string]int64{
-		"targets": 1, "failed": 1, "commits_walked": 33, "files_read": 32,
+		"targets": 1, "failed": 1, "commits_walked": 9, "files_read": 8,
 	})
 }
 
@@ -1039,8 +1252,8 @@ func (g *cancellingGit) Head(ctx context.Context, repo model.TargetRepo) (string
 func TestRun_ReadsBlobsInChunks(t *testing.T) {
 	t.Parallel()
 	var commits []model.Commit
-	git := &fakeGit{heads: map[string]string{"alpha": "c64"}}
-	for i := range 65 {
+	git := &fakeGit{heads: map[string]string{"alpha": "c16"}}
+	for i := range 17 {
 		c := commit(fmt.Sprintf("c%d", i), 1, "go.mod")
 		commits = append(commits, c)
 		git.file(c, "go.mod", fmt.Sprintf("pkg:golang/a@v1.0.%d", i))
@@ -1058,14 +1271,14 @@ func TestRun_ReadsBlobsInChunks(t *testing.T) {
 	for i, c := range git.readCalls {
 		sizes[i] = len(c)
 	}
-	if want := []int{32, 32, 1}; !reflect.DeepEqual(sizes, want) {
+	if want := []int{8, 8, 1}; !reflect.DeepEqual(sizes, want) {
 		t.Errorf("ReadBlobs call sizes = %v, want %v", sizes, want)
 	}
-	if got["files_read"] != 65 || got["events_written"] != 65 {
-		t.Errorf("files_read, events_written = %d, %d, want 65, 65", got["files_read"], got["events_written"])
+	if got["files_read"] != 17 || got["events_written"] != 17 {
+		t.Errorf("files_read, events_written = %d, %d, want 17, 17", got["files_read"], got["events_written"])
 	}
-	if u := onlyApply(t, ts); len(u.Intervals) != 65 {
-		t.Errorf("Intervals = %d, want 65", len(u.Intervals))
+	if u := onlyApply(t, ts); len(u.Intervals) != 17 {
+		t.Errorf("Intervals = %d, want 17", len(u.Intervals))
 	}
 }
 

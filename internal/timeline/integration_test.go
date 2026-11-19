@@ -819,6 +819,105 @@ func TestTimeline_RewrittenHistory(t *testing.T) {
 	checkStats(t, next, map[string]int64{"resets": 0, "commits_walked": 0, "events_written": 0})
 }
 
+// TestTimeline_FastForwardAfterOursMerge indexes main at M, then
+// fast-forwards main to a feature branch that merged M with -s ours, keeping
+// the feature's go.mod. M is then an ancestor of the new head only through
+// the merge's second parent, so it is not on the first-parent chain: the
+// timeline must rebuild and match a fresh index of the same history.
+func TestTimeline_FastForwardAfterOursMerge(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", goMod("example.com/a v1.0.0"))
+	c1 := up.Commit("add a", day(1))
+
+	up.Branch("feature")
+	up.Write("README", "feature work\n")
+	up.Commit("feature work", day(2))
+
+	up.Switch("main")
+	up.Write("go.mod", goMod("example.com/a v1.2.0"))
+	m := up.Commit("bump a to v1.2.0", day(3))
+
+	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
+	s.sync()
+	if got := s.repo("app").LastIndexedSHA; got != m {
+		t.Fatalf("LastIndexedSHA after the first run = %s, want M %s", got, m)
+	}
+
+	// The feature branch merges main but keeps its own tree, then main is
+	// fast-forwarded to it.
+	up.Switch("feature")
+	up.Git("merge", "--quiet", "--no-ff", "--no-commit", "-s", "ours", "main")
+	merge := up.Commit("merge main, keeping feature", day(4))
+	up.Switch("main")
+	up.Git("merge", "--quiet", "--ff-only", "feature")
+	if head := up.Head(); head != merge {
+		t.Fatalf("main after fast-forward = %s, want the merge %s", head, merge)
+	}
+
+	run := s.sync()
+	checkStats(t, run, map[string]int64{"resets": 1, "failed": 0})
+
+	var open []iv
+	for _, i := range s.intervals("app") {
+		if i.Package.PURL == purlA && i.IsOpen() {
+			open = append(open, ivs([]model.DepInterval{i})...)
+		}
+	}
+	wantOpen := []iv{{"go.mod", purlA, "v1.0.0", c1, day(1), "", time.Time{}}}
+	if !reflect.DeepEqual(open, wantOpen) {
+		t.Errorf("open intervals of a at HEAD = %+v, want %+v", open, wantOpen)
+	}
+	if got := s.repo("app").LastIndexedSHA; got != merge {
+		t.Errorf("LastIndexedSHA = %s, want %s", got, merge)
+	}
+
+	fresh := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
+	fresh.sync()
+	if got, want := evs(s.events("app")), evs(fresh.events("app")); !reflect.DeepEqual(got, want) {
+		t.Errorf("events after the fast-forward =\n%+v\nwant those of a full rebuild\n%+v", got, want)
+	}
+	if got, want := ivs(s.intervals("app")), ivs(fresh.intervals("app")); !reflect.DeepEqual(got, want) {
+		t.Errorf("intervals after the fast-forward =\n%+v\nwant those of a full rebuild\n%+v", got, want)
+	}
+	gotCommits, wantCommits := s.commitSHAs("app"), fresh.commitSHAs("app")
+	if !reflect.DeepEqual(gotCommits, wantCommits) {
+		t.Errorf("stored commits = %v, want those of a full rebuild %v", gotCommits, wantCommits)
+	}
+	if slices.Contains(gotCommits, m) {
+		t.Errorf("stored commits %v still hold M %s, which is off the first-parent chain", gotCommits, m)
+	}
+}
+
+// commitSHAs returns the SHAs in the commits table for slug, in position
+// order. No store method lists commits, so it reads the table directly.
+func (s *stack) commitSHAs(slug string) []string {
+	s.t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(s.dataDir, "upw.sqlite"))
+	if err != nil {
+		s.t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(s.t.Context(),
+		"SELECT sha FROM commits WHERE repo_id = ? ORDER BY position", s.repo(slug).ID)
+	if err != nil {
+		s.t.Fatalf("query commits: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
+			s.t.Fatalf("scan commit: %v", err)
+		}
+		out = append(out, sha)
+	}
+	if err := rows.Err(); err != nil {
+		s.t.Fatalf("rows of commits: %v", err)
+	}
+	return out
+}
+
 func TestTimeline_IndirectBecomesDirect(t *testing.T) {
 	t.Parallel()
 	up := gitrepo.New(t, "main")
@@ -884,6 +983,41 @@ func TestTimeline_ExcludedPaths(t *testing.T) {
 		if strings.Contains(e.ManifestPath, "testdata/") || strings.HasPrefix(e.ManifestPath, "examples/") {
 			t.Errorf("event for a skipped manifest: %+v", e)
 		}
+	}
+}
+
+// Tightening exclude_paths closes nothing by itself: the next run, with no
+// new commit, drops the intervals of the newly excluded manifest from the
+// store and keeps the others' rows; the events stay stored.
+func TestTimeline_RetroactiveExclusion(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", goMod("example.com/a v1.0.0"))
+	up.Write("examples/demo/requirements.txt", "flask==3.0.0\n")
+	c1 := up.Commit("first", day(1))
+
+	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
+	s.sync()
+	before := s.intervals("app")
+	events := s.events("app")
+	if len(before) != 2 || len(events) != 2 {
+		t.Fatalf("after the first run: %d intervals, %d events, want 2 and 2", len(before), len(events))
+	}
+
+	s.retarget(target{slug: "app", url: up.URL(), branch: "main", exclude: []string{"examples"}})
+	run := s.run("timeline")
+	checkStats(t, run, map[string]int64{"commits_walked": 0, "events_written": 0, "intervals": 1, "resets": 0})
+
+	after := s.intervals("app")
+	want := []iv{{"go.mod", purlA, "v1.0.0", c1, day(1), "", time.Time{}}}
+	if got := ivs(after); !reflect.DeepEqual(got, want) {
+		t.Errorf("intervals after the exclusion =\n%+v\nwant\n%+v", got, want)
+	}
+	if kept := ofPURL(before, purlA); len(after) == 1 && len(kept) == 1 && after[0].ID != kept[0].ID {
+		t.Errorf("interval of a ID = %d, want kept %d", after[0].ID, kept[0].ID)
+	}
+	if got := s.events("app"); !reflect.DeepEqual(got, events) {
+		t.Errorf("events after the exclusion =\n%+v\nwant unchanged\n%+v", got, events)
 	}
 }
 

@@ -32,6 +32,33 @@ func excludedPath(path string, prefixes []string) bool {
 	return false
 }
 
+// dropFilteredEvents returns the stored events the current rules still
+// index: those whose manifest path excludedPath accepts with prefixes and,
+// when ecosystems is not empty, whose package ecosystem is listed. It also
+// returns the number of events left out. Order is kept and the input slice
+// is not modified.
+func dropFilteredEvents(events []model.DepEvent, prefixes, ecosystems []string) ([]model.DepEvent, int) {
+	var out []model.DepEvent
+	dropped := 0
+	for i, ev := range events {
+		drop := excludedPath(ev.ManifestPath, prefixes) ||
+			(len(ecosystems) > 0 && !slices.Contains(ecosystems, ev.Package.Ecosystem))
+		switch {
+		case drop && dropped == 0:
+			out = append(make([]model.DepEvent, 0, len(events)-1), events[:i]...)
+			dropped++
+		case drop:
+			dropped++
+		case dropped > 0:
+			out = append(out, ev)
+		}
+	}
+	if dropped == 0 {
+		return events, 0
+	}
+	return out, dropped
+}
+
 // dropExcluded returns commits with every excluded path removed from their
 // Paths, and the number of path occurrences removed. Commits left with no
 // paths are kept. The input commits are not modified.

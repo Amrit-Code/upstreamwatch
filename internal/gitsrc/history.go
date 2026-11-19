@@ -73,6 +73,107 @@ func (g *CLI) IsAncestor(ctx context.Context, repo model.TargetRepo, ancestor, c
 	}
 }
 
+// OnFirstParentChain reports whether commit is on the first-parent chain
+// ending at head in repo.ClonePath (head itself counts). It streams git
+// rev-list --first-parent from head and stops git at the first match, so a
+// commit near head costs little however long the history is. A commit that
+// does not exist in the clone, or is not a full object name, is not on the
+// chain; a head that does not exist is an error. When the chain's listing
+// passes MaxLogBytes before a match, git is killed and OnFirstParentChain
+// returns an error naming the limit.
+func (g *CLI) OnFirstParentChain(ctx context.Context, repo model.TargetRepo, commit, head string) (bool, error) {
+	clone, err := g.prepareClone(repo)
+	if err != nil {
+		return false, fmt.Errorf("first-parent chain of %s: %w", repo.Slug, err)
+	}
+	if err := checkRevision(head); err != nil {
+		return false, fmt.Errorf("first-parent chain of %s: %w", repo.Slug, err)
+	}
+	if !isObjectName(commit) {
+		// rev-list prints full object names only, so nothing else can match.
+		return false, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	scan := &chainScanner{want: commit, limit: g.opts.MaxLogBytes, stop: cancel}
+	runErr := g.run(ctx, invocation{
+		gitDir: clone,
+		args:   []string{"rev-list", "--first-parent", "--end-of-options", head},
+		stdout: scan,
+	})
+	// run has waited for git and for the goroutine that writes stdout, so
+	// the scanner's fields are safe to read here. A match stops git, whose
+	// resulting error is expected and ignored.
+	switch {
+	case scan.found:
+		return true, nil
+	case scan.exceeded:
+		return false, fmt.Errorf("first-parent chain of %s: git rev-list output exceeded the %s MiB limit", repo.Slug, formatMiB(g.opts.MaxLogBytes))
+	case runErr != nil:
+		return false, fmt.Errorf("first-parent chain of %s: %w", repo.Slug, runErr)
+	default:
+		return false, nil
+	}
+}
+
+// errChainStop is what chainScanner returns once it has seen its commit or
+// passed its limit; it stops the copy from git's stdout pipe.
+var errChainStop = errors.New("first-parent chain scan stopped")
+
+// chainScanner reads git rev-list output, one object name per line, and
+// stops at the line equal to want. It keeps only the current partial line,
+// so memory stays small however long the chain is. Only lines that end
+// within the first limit bytes are compared. Once it has seen want, or the
+// limit is passed, it calls stop, which kills git, and refuses further
+// writes.
+type chainScanner struct {
+	want     string
+	limit    int64
+	stop     func()
+	read     int64
+	partial  []byte
+	found    bool
+	exceeded bool
+}
+
+// Write scans p for want, line by line.
+func (s *chainScanner) Write(p []byte) (int, error) {
+	if s.found || s.exceeded {
+		return 0, errChainStop
+	}
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		take := i + 1
+		if i < 0 {
+			take = len(p)
+		}
+		if s.read+int64(take) > s.limit {
+			s.exceeded = true
+			s.stop()
+			return 0, errChainStop
+		}
+		s.read += int64(take)
+		if i < 0 {
+			s.partial = append(s.partial, p...)
+			break
+		}
+		line := p[:i]
+		if len(s.partial) > 0 {
+			line = append(s.partial, line...)
+			s.partial = s.partial[:0]
+		}
+		p = p[take:]
+		if string(line) == s.want {
+			s.found = true
+			s.stop()
+			return 0, errChainStop
+		}
+	}
+	return n, nil
+}
+
 // commitExists reports whether rev names a commit present in the clone at
 // dir. Any exit status from git cat-file -e means it does not; failing to run
 // git is an error.
@@ -130,15 +231,15 @@ func (g *CLI) ManifestCommits(ctx context.Context, repo model.TargetRepo, from, 
 		revs = append(revs, "^"+from)
 	}
 
-	// --first-parent walks only the branch's own chain. --full-history and
-	// --sparse turn off history simplification, so every commit on that
-	// chain is printed and none is dropped or replaced because it is
-	// TREESAME to some parent; commits with no matching path are filtered
-	// below. --diff-merges=first-parent gives a merge the diff against its
-	// first parent, which is what the branch saw change. --no-renames lists
-	// a rename as the deleted and the added path.
+	// --first-parent walks only the branch's own chain. --full-history turns
+	// off history simplification, so no commit on that chain is dropped or
+	// replaced because it is TREESAME to some parent; commits that touch no
+	// matching path are not printed, so the output grows with the
+	// manifest-touching commits only. --diff-merges=first-parent gives a
+	// merge the diff against its first parent, which is what the branch saw
+	// change. --no-renames lists a rename as the deleted and the added path.
 	args := []string{
-		"log", "--first-parent", "--full-history", "--sparse",
+		"log", "--first-parent", "--full-history",
 		"--diff-merges=first-parent", "--no-renames", "--name-only",
 		"--reverse", "-z", "--no-color", "--format=" + logFormat,
 		"--end-of-options",

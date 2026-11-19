@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 )
@@ -37,7 +39,7 @@ const (
 	defaultMaxCloneBytes = 2048 << 20
 	defaultCloneTimeout  = 30 * time.Minute
 	defaultFetchTimeout  = 10 * time.Minute
-	defaultMaxBlobBytes  = 1 << 20
+	defaultMaxBlobBytes  = 8 << 20
 	defaultMaxLogBytes   = 64 << 20
 )
 
@@ -51,7 +53,7 @@ type Options struct {
 	MaxCloneBytes int64         // size cap on one clone directory; zero means 2048 MiB
 	CloneTimeout  time.Duration // deadline for a first sync; zero means 30 minutes
 	FetchTimeout  time.Duration // deadline for a later sync and for ls-remote; zero means 10 minutes
-	MaxBlobBytes  int64         // ReadBlobs cap per blob; zero means 1 MiB
+	MaxBlobBytes  int64         // ReadBlobs cap per blob; zero means 8 MiB
 	MaxLogBytes   int64         // cap on the git log output ManifestCommits reads; zero means 64 MiB
 	// AllowFileURLs lets Sync accept file:// URLs and skips the address
 	// check for them. Only tests set it, to sync from fixture repositories.
@@ -267,9 +269,18 @@ func runError(ctx context.Context, name string, err error, stderr *cappedBuffer,
 const redacted = "[REDACTED]"
 
 // scrub replaces every occurrence of each secret in s, then passes s through
-// model.Redact. When s was cut at the output cap, a tail of s that is the
-// start of a secret is replaced too, since the cut can split one.
+// model.Redact, then replaces every control character other than newline and
+// tab, and every byte that is not valid UTF-8, with "?". When s was cut at
+// the output cap, a tail of s that is the start of a secret is replaced too,
+// since the cut can split one. A hostile remote writes git's stderr, so
+// without the last step it could put terminal escape sequences into error
+// text that an operator reads on a terminal.
 func scrub(s string, truncated bool, secrets []string) string {
+	return replaceControl(redactSecrets(s, truncated, secrets))
+}
+
+// redactSecrets is the credential part of scrub.
+func redactSecrets(s string, truncated bool, secrets []string) string {
 	for _, sec := range secrets {
 		if sec != "" {
 			s = strings.ReplaceAll(s, sec, redacted)
@@ -292,6 +303,27 @@ func scrub(s string, truncated bool, secrets []string) string {
 		}
 	}
 	return model.Redact(s)
+}
+
+// replaceControl returns s with every rune for which unicode.IsControl is
+// true, other than '\n' and '\t', and every invalid UTF-8 byte replaced by
+// '?'.
+func replaceControl(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			b.WriteByte('?')
+		case r != '\n' && r != '\t' && unicode.IsControl(r):
+			b.WriteByte('?')
+		default:
+			b.WriteString(s[:size])
+		}
+		s = s[size:]
+	}
+	return b.String()
 }
 
 // exitCode returns the process exit code wrapped in err, or -1 when err is

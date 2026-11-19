@@ -11,8 +11,10 @@ import (
 type GitSource interface {
 	// Head returns the commit repo.DefaultBranch points at in the clone.
 	Head(ctx context.Context, repo model.TargetRepo) (string, error)
-	// IsAncestor reports whether ancestor is reachable from commit.
-	IsAncestor(ctx context.Context, repo model.TargetRepo, ancestor, commit string) (bool, error)
+	// OnFirstParentChain reports whether commit is on the first-parent chain
+	// ending at head (head itself counts). A commit that does not exist in
+	// the clone is not on the chain.
+	OnFirstParentChain(ctx context.Context, repo model.TargetRepo, commit, head string) (bool, error)
 	// ManifestCommits returns the commits on the first-parent chain ending
 	// at to, after from (from empty means from the root commit), that
 	// changed a path matching one of patterns relative to their first

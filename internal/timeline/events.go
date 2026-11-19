@@ -128,11 +128,15 @@ func newEvent(c model.Commit, path string, d model.Dependency, change model.Chan
 	}
 }
 
-// fold builds the complete interval set from an ordered event list. Per
-// manifest path and package URL, an added or changed event closes the open
-// interval, if any, at its commit and opens a new one there; a removed event
-// closes the open interval, if any. The result is ordered by package URL,
-// manifest path, then opening time, with commit order kept for equal times.
+// fold builds the complete interval set from an event list, folding the
+// events strictly in the order given (commit position, then manifest path,
+// then package URL), never by date. Per manifest path and package URL, an
+// added or changed event closes the open interval, if any, at its commit and
+// opens a new one there; a removed event closes the open interval, if any.
+// A closing commit dated before the interval's opening commit, as committer
+// clock skew can produce, closes it at its opening time, so no interval ends
+// before it starts. The result is ordered by package URL, manifest path,
+// then opening time, with commit order kept for equal times.
 func fold(events []model.DepEvent) []model.DepInterval {
 	type key struct{ path, purl string }
 	open := map[key]int{}
@@ -142,6 +146,9 @@ func fold(events []model.DepEvent) []model.DepInterval {
 		if i, ok := open[k]; ok {
 			out[i].ToSHA = ev.CommitSHA
 			out[i].To = ev.CommittedAt
+			if out[i].To.Before(out[i].From) {
+				out[i].To = out[i].From
+			}
 			delete(open, k)
 		}
 		if ev.Change == model.ChangeRemoved {

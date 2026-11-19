@@ -157,6 +157,38 @@ func TestRunError_RedactsReflectedCredentials(t *testing.T) {
 	}
 }
 
+func TestRunError_ReplacesControlCharacters(t *testing.T) {
+	t.Parallel()
+	const token = "fake-token-abcdefgh1234"
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{"clear screen escape", "remote: \x1b[2Jgone", "remote: ?[2Jgone"},
+		{"C1 control sequence introducer", "remote: \u009b31mred", "remote: ?31mred"},
+		{"carriage return and bell", "remote: a\rb\x07c", "remote: a?b?c"},
+		{"newline and tab kept", "remote: one\n\ttwo", "remote: one\n\ttwo"},
+		{"invalid UTF-8", "remote: \xff\xfe ok \xe2\x82", "remote: ?? ok ??"},
+		{"valid UTF-8 kept", "remote: déjà vu �", "remote: déjà vu �"},
+		{"secret scrubbed first", "remote: \x1b]0;" + token + "\x07", "remote: ?]0;" + redacted + "?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := scrub(tt.stderr, false, []string{token}); got != tt.want {
+				t.Errorf("scrub(%q) = %q, want %q", tt.stderr, got, tt.want)
+			}
+			stderr := &cappedBuffer{limit: outputLimit}
+			stderr.Write([]byte(tt.stderr))
+			err := runError(t.Context(), "fetch", errors.New("exit status 128"), stderr, []string{token})
+			if want := "run git fetch: exit status 128: " + tt.want; err == nil || err.Error() != want {
+				t.Errorf("runError() = %q, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestParseSymref(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -2,6 +2,7 @@ package timeline
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -431,6 +432,91 @@ func TestDropExcluded(t *testing.T) {
 	}
 	if got, n := dropExcluded(nil, nil); len(got) != 0 || n != 0 {
 		t.Errorf("dropExcluded(nil) = %v, %d, want empty, 0", got, n)
+	}
+}
+
+func TestFold_ClampsBackwardDates(t *testing.T) {
+	t.Parallel()
+	// c2 follows c1 on the chain but its committer clock was behind.
+	c1, c2, c3 := commit("c1", 5), commit("c2", 3), commit("c3", 4)
+	v1 := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectYes, "")
+	v2 := dep("pkg:golang/a", "v1.1.0", "v1.1.0", model.DirectYes, "")
+	b1 := dep("pkg:golang/b", "v1.0.0", "v1.0.0", model.DirectYes, "")
+
+	got := fold([]model.DepEvent{
+		event(c1, "go.mod", v1, model.ChangeAdded, ""),
+		event(c1, "go.mod", b1, model.ChangeAdded, ""),
+		event(c2, "go.mod", v2, model.ChangeChanged, "v1.0.0"),
+		event(c2, "go.mod", b1, model.ChangeRemoved, "v1.0.0"),
+		event(c3, "go.mod", v2, model.ChangeRemoved, "v1.1.0"),
+	})
+	closedAtOpen := func(d model.Dependency, from, to model.Commit) model.DepInterval {
+		iv := interval("go.mod", d, from, &to)
+		iv.To = from.CommittedAt
+		return iv
+	}
+	// Folded in the given order, never by date; the output is sorted by
+	// opening time, so v1.1.0 (opened day 3) comes before v1.0.0 (day 5).
+	want := []model.DepInterval{
+		interval("go.mod", v2, c2, &c3),
+		closedAtOpen(v1, c1, c2),
+		closedAtOpen(b1, c1, c2),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fold() =\n%+v\nwant\n%+v", got, want)
+	}
+	for _, iv := range got {
+		if iv.To.Before(iv.From) {
+			t.Errorf("interval %+v ends before it starts", iv)
+		}
+	}
+}
+
+func TestDropFilteredEvents(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1)
+	goA := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectYes, "")
+	img := model.Dependency{Package: pkg("pkg:docker/golang", "docker"), Version: "1.27"}
+	root := event(c1, "go.mod", goA, model.ChangeAdded, "")
+	example := event(c1, "examples/go.mod", goA, model.ChangeAdded, "")
+	fixture := event(c1, "internal/testdata/go.mod", goA, model.ChangeAdded, "")
+	docker := event(c1, "Dockerfile", img, model.ChangeAdded, "")
+	all := []model.DepEvent{docker, example, root, fixture}
+
+	tests := []struct {
+		name        string
+		prefixes    []string
+		ecosystems  []string
+		want        []model.DepEvent
+		wantDropped int
+	}{
+		{"skipped directory always", nil, nil, []model.DepEvent{docker, example, root}, 1},
+		{"excluded prefix", []string{"examples/"}, nil, []model.DepEvent{docker, root}, 2},
+		{"ecosystem allowlist", nil, []string{"golang"}, []model.DepEvent{example, root}, 2},
+		{"both", []string{"examples"}, []string{"docker"}, []model.DepEvent{docker}, 3},
+		{"ecosystem not listed drops all", nil, []string{"pypi"}, []model.DepEvent{}, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			in := slices.Clone(all)
+			got, dropped := dropFilteredEvents(in, tt.prefixes, tt.ecosystems)
+			if !reflect.DeepEqual(got, tt.want) || dropped != tt.wantDropped {
+				t.Errorf("dropFilteredEvents(%v, %v) = %+v, %d, want %+v, %d",
+					tt.prefixes, tt.ecosystems, got, dropped, tt.want, tt.wantDropped)
+			}
+			if !reflect.DeepEqual(in, all) {
+				t.Errorf("input events = %+v, want unchanged %+v", in, all)
+			}
+		})
+	}
+
+	kept := []model.DepEvent{docker, root}
+	if got, dropped := dropFilteredEvents(kept, nil, nil); dropped != 0 || !reflect.DeepEqual(got, kept) {
+		t.Errorf("dropFilteredEvents(nothing to drop) = %+v, %d, want the input, 0", got, dropped)
+	}
+	if got, dropped := dropFilteredEvents(nil, []string{"x"}, []string{"golang"}); len(got) != 0 || dropped != 0 {
+		t.Errorf("dropFilteredEvents(nil) = %+v, %d, want empty, 0", got, dropped)
 	}
 }
 

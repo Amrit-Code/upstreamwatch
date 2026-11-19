@@ -14,8 +14,9 @@ import (
 const jobName = "timeline"
 
 // blobChunkSize caps the refs passed to one ReadBlobs call. With gitsrc's
-// per-blob size cap it bounds the file contents held at once.
-const blobChunkSize = 32
+// per-blob size cap (8 MiB by default) it bounds the file contents held at
+// once (64 MiB by default).
+const blobChunkSize = 8
 
 // maxDepsPerFile is the most dependencies one parsed file may hold; a file
 // with more is treated as a parse error.
@@ -85,7 +86,8 @@ func NewService(git GitSource, repos RepoStore, store TimelineStore, extractors 
 // Name returns "timeline".
 func (s *Service) Name() string { return jobName }
 
-// Run indexes every target in scope, in config order. A target that is not
+// Run indexes every target in scope, in config order. With scope.Rebuild
+// every target in scope is rebuilt from the root. A target that is not
 // stored or was never fetched is skipped. A target whose git or store call
 // fails is logged and the others continue; the returned error then names
 // every failed target. The stats count the work done, including the work of
@@ -107,7 +109,7 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 			return stats, err
 		}
 		stats["targets"]++
-		ts, err := s.indexTarget(ctx, t)
+		ts, err := s.indexTarget(ctx, t, scope.Rebuild)
 		for k, v := range ts {
 			stats[k] += v
 		}
@@ -144,8 +146,14 @@ func (s *Service) targetsInScope(scope model.Scope) ([]TargetSettings, error) {
 
 // indexTarget brings one target's timeline up to its branch head and returns
 // the target's counters, which on an error hold the work done before it.
-// Nothing is stored unless ApplyTimeline succeeds.
-func (s *Service) indexTarget(ctx context.Context, t TargetSettings) (model.Stats, error) {
+// The timeline is rebuilt from the root when rebuild is set or when the last
+// indexed commit is not on the head's first-parent chain. Otherwise it walks
+// on from the last indexed commit, leaving out of the state and the
+// intervals every stored event that the target's current exclusions or
+// ecosystem allowlist reject; when the head has not moved and no stored
+// event is left out, nothing is done. Nothing is stored unless ApplyTimeline
+// succeeds.
+func (s *Service) indexTarget(ctx context.Context, t TargetSettings, rebuild bool) (model.Stats, error) {
 	st := model.Stats{}
 	repo, err := s.repos.GetRepo(ctx, t.Slug)
 	if errors.Is(err, model.ErrNotFound) {
@@ -166,38 +174,52 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings) (model.Stat
 	if err != nil {
 		return st, fmt.Errorf("read head: %w", err)
 	}
-	if head == repo.LastIndexedSHA {
-		return st, nil
-	}
 
 	from := repo.LastIndexedSHA
-	reset := false
-	if from != "" {
-		ok, err := s.git.IsAncestor(ctx, repo, from, head)
+	reset := rebuild
+	if !reset && from != "" && from != head {
+		// A commit reached only through a merge's second parent was never on
+		// the branch as the new head sees it, so walking on from it would
+		// miss changes; only the first-parent chain allows an incremental
+		// walk.
+		ok, err := s.git.OnFirstParentChain(ctx, repo, from, head)
 		if err != nil {
-			return st, fmt.Errorf("check ancestry: %w", err)
+			return st, fmt.Errorf("check first-parent chain: %w", err)
 		}
 		if !ok {
 			s.logger.Warn("timeline history rewritten, rebuilding from root",
 				"repo", t.Slug, "last_indexed_sha", from, "head", head)
 			reset = true
-			from = ""
-			st["resets"] = 1
 		}
 	}
+	if reset {
+		from = ""
+		st["resets"] = 1
+	}
+
 	var stored []model.DepEvent
 	if !reset {
 		stored, err = s.store.ListEvents(ctx, repo.ID)
 		if err != nil {
 			return st, fmt.Errorf("list events: %w", err)
 		}
+		var filtered int
+		stored, filtered = dropFilteredEvents(stored, t.ExcludePaths, t.Ecosystems)
+		// With nothing new to walk, the run still replaces the intervals when
+		// tightened rules left stored events out, so theirs disappear.
+		if head == from && filtered == 0 {
+			return st, nil
+		}
 	}
 	state := stateFromEvents(stored)
 
 	exts := s.targetExtractors(t)
-	commits, err := s.git.ManifestCommits(ctx, repo, from, head, unionPatterns(exts))
-	if err != nil {
-		return st, fmt.Errorf("list manifest commits: %w", err)
+	var commits []model.Commit
+	if head != from {
+		commits, err = s.git.ManifestCommits(ctx, repo, from, head, unionPatterns(exts))
+		if err != nil {
+			return st, fmt.Errorf("list manifest commits: %w", err)
+		}
 	}
 	st["commits_walked"] = int64(len(commits))
 	// Excluded paths leave the commits before any blob is read, so they cost

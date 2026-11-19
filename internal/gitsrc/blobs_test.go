@@ -55,12 +55,12 @@ func TestReadBlobs(t *testing.T) {
 func TestReadBlobs_DefaultCap(t *testing.T) {
 	t.Parallel()
 	up := gitrepo.New(t, "main")
-	up.Write("huge.lock", strings.Repeat("h", 2<<20))
-	up.Write("exact.lock", strings.Repeat("e", 1<<20))
-	up.Write("medium.lock", strings.Repeat("m", 512<<10))
+	up.Write("huge.lock", strings.Repeat("h", 9<<20))
+	up.Write("exact.lock", strings.Repeat("e", 8<<20))
+	up.Write("medium.lock", strings.Repeat("m", 2<<20))
 	head := up.Commit("lockfiles", day(1))
 
-	opts := testOptions(t) // MaxBlobBytes zero: the 1 MiB default
+	opts := testOptions(t) // MaxBlobBytes zero: the 8 MiB default
 	g, repo := syncFixture(t, up, opts)
 	refs := []model.BlobRef{
 		{Commit: head, Path: "huge.lock"},
@@ -75,13 +75,13 @@ func TestReadBlobs_DefaultCap(t *testing.T) {
 		t.Fatalf("ReadBlobs() returned %d blobs, want 3", len(got))
 	}
 	if !got[0].TooLarge || got[0].Content != nil {
-		t.Errorf("2 MiB blob = TooLarge %v, %d bytes, want TooLarge and no content", got[0].TooLarge, len(got[0].Content))
+		t.Errorf("9 MiB blob = TooLarge %v, %d bytes, want TooLarge and no content", got[0].TooLarge, len(got[0].Content))
 	}
-	if got[1].TooLarge || len(got[1].Content) != 1<<20 {
-		t.Errorf("1 MiB blob = TooLarge %v, %d bytes, want it read whole", got[1].TooLarge, len(got[1].Content))
+	if got[1].TooLarge || len(got[1].Content) != 8<<20 {
+		t.Errorf("8 MiB blob = TooLarge %v, %d bytes, want it read whole", got[1].TooLarge, len(got[1].Content))
 	}
-	if got[2].TooLarge || string(got[2].Content) != strings.Repeat("m", 512<<10) {
-		t.Errorf("512 KiB blob = TooLarge %v, %d bytes, want it read whole", got[2].TooLarge, len(got[2].Content))
+	if got[2].TooLarge || string(got[2].Content) != strings.Repeat("m", 2<<20) {
+		t.Errorf("2 MiB blob = TooLarge %v, %d bytes, want it read whole", got[2].TooLarge, len(got[2].Content))
 	}
 }
 

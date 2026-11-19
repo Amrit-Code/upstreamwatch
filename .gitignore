@@ -12,3 +12,6 @@ bin/
 .claude/plans/**/*.diff
 .claude/settings.local.json
 .DS_Store
+
+# Agent worktrees
+.claude/worktrees/

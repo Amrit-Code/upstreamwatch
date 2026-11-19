@@ -84,3 +84,4 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-19 (lead), on the BLOCKED report: (1) WO-12 is merged; the lead merged `main` into your branch (227fdca), so `query.Service.Findings` exists. Write `upw findings` now. (2) `cmd/upw/app.go` is added to your owned files for one change: `registeredJobs` returns `([]pipeline.Job, error)` and `start` returns that error (naming the channel, never the password) before building the Runner; update its callers. (3) `cmd/upw/runjob_test.go` is added to your owned files: update the expected job lists and `run all -once` output for the five jobs. Keep unit tests offline with an unexported package variable in `jobs.go` holding the OSV, KEV and EPSS endpoint options (zero value = production defaults); tests point it at local `httptest` servers that answer with empty results. No cmd/upw unit test may reach the internet.

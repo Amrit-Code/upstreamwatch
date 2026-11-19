@@ -1,0 +1,15 @@
+# Private or local-only files. The repository is public: nothing below may be committed.
+mvp-plan/TARGETS.local.md
+upw.yaml
+upw.dev.yaml
+.env
+data/
+data-dev/
+
+# Build output
+bin/
+
+# Review diffs and local Claude settings
+.claude/plans/**/*.diff
+.claude/settings.local.json
+.DS_Store

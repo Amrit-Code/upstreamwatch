@@ -1,0 +1,42 @@
+# Private target details and anything derived from them
+TARGETS.local.md
+*.local.md
+*.local.yaml
+*.local.yml
+
+# Runtime config and secrets (public example files are upw.example.yaml / .env.example)
+upw.yaml
+upw.dev.yaml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+
+# Data, clones, backups, exports, private eval material
+data/
+data-dev/
+backups/
+exports/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+eval/private/
+eval/reports/private/
+labels*.json
+!eval/fixtures/labels.json
+
+# Build artefacts
+/upw
+/bin/
+/dist/
+coverage.out
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

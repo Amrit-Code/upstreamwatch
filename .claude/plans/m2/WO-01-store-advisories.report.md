@@ -103,3 +103,71 @@ Outside scope:
 
 Concerns: none
 Question or blocker: none
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-01-store-advisories.md (on top of 9dacae1)
+Files changed:
+- internal/store/advisories.go (modified)
+- internal/store/advisories_test.go (modified)
+- .claude/plans/m2/WO-01-store-advisories.report.md (modified: this section)
+
+Findings fixed:
+1. ReplaceMatches now checks, inside the transaction and before any write, that every match's DepVersionID is a dep_versions row of repoID. It does this with one query, `SELECT id FROM dep_versions WHERE repo_id = ?`, read into a set by the new helper `advRepoIntervalIDs`. A match naming another repo's interval, or an interval that is not stored, is an error, and the transaction rolls back with nothing written. The doc comment states the rule.
+2. On insert, SaveAdvisory writes epss_ts only when HasEPSS is true and NULL otherwise, together with epss and epss_percentile. The ON CONFLICT update still leaves every signal column alone. The doc comment states it.
+
+Tests added:
+- TestReplaceMatches_Invalid gains two cases, `interval of another repo` and `interval not stored`. Each sends a valid match plus the bad one, and checks that both repos' matches are unchanged. The other repo has a stored match for the same advisory on its own interval, which the old code moved over to this repo.
+- TestSaveAdvisory_InsertWithoutEPSSStoresNullEPSSTime: an insert with EPSSAt set and HasEPSS false stores epss, epss_percentile and epss_ts as NULL and reads back with a zero EPSSAt.
+
+Commands run:
+- With both fixes disabled in a temporary copy, `go test -race -count=1 -run 'TestReplaceMatches_Invalid|TestSaveAdvisory_InsertWithoutEPSS' ./internal/store/` -> FAIL (shows the new tests catch both bugs). The fixed file was then copied back.
+  --- FAIL: TestSaveAdvisory_InsertWithoutEPSSStoresNullEPSSTime (0.09s)
+      advisories_test.go:223: advisory rows with NULL epss, epss_percentile and epss_ts = 0, want 1
+      advisories_test.go:227: ListAdvisories() = [{ID:CVE-2026-8 ... EPSSAt:2026-03-03 12:00:00 +0000 UTC Raw:[]}], want [{ID:CVE-2026-8 ... EPSSAt:0001-01-01 00:00:00 +0000 UTC Raw:[]}]
+  --- FAIL: TestReplaceMatches_Invalid (0.12s)
+      advisories_test.go:520: interval of another repo: ReplaceMatches() error = nil, want an error
+      advisories_test.go:523: interval of another repo: matches = [{ID:1 RepoID:1 DepVersionID:1 ...} {ID:2 RepoID:1 DepVersionID:2 ...}], want unchanged [{ID:1 RepoID:1 DepVersionID:1 ...}]
+      advisories_test.go:526: interval of another repo: other repo's matches = [], want unchanged [{ID:2 RepoID:2 DepVersionID:2 ... Confidence:low ...}]
+      (the "interval not stored" lines that follow only repeat the state left behind by the case above)
+  FAIL
+- `go test -race -count=1 -v -run 'TestReplaceMatches|TestSaveAdvisory' ./internal/store/` (fixed code) -> exit 0
+  --- PASS: TestSaveAdvisory_InsertTakesSignals
+  --- PASS: TestSaveAdvisory_NullColumns
+  --- PASS: TestSaveAdvisory_InsertWithoutEPSSStoresNullEPSSTime
+  --- PASS: TestSaveAdvisory_UpdateKeepsSignals
+  --- PASS: TestSaveAdvisory_RoundTrip
+  --- PASS: TestReplaceMatches_Invalid
+  --- PASS: TestReplaceMatches_KeepsIDsAndDeletes
+  --- PASS: TestSaveAdvisory_Errors
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	1.613s
+- `make check > check1.log 2>&1; echo $?` -> exit 0
+  (tail)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+  (store package line: ok  	github.com/Amrit-Code/upstreamwatch/internal/store	7.621s)
+- `go test -race -run 'TestSaveAdvisory|TestApplySignals|TestReplaceMatches|TestQueriedVersions|TestKV|TestListAllIntervals|TestGetFindingDetail' ./internal/store/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	4.129s
+- `git status --porcelain` -> exit 0
+   M internal/store/advisories.go
+   M internal/store/advisories_test.go
+  (plus this report file)
+
+Decisions:
+- The ownership check reads the repo's interval IDs once and checks them in Go, rather than binding the match IDs in an IN list. That keeps it to one query with no chunking at 500, however many matches there are.
+- An interval ID that is not stored at all is refused with the same error as another repo's interval. Before, the foreign key caught it in the middle of the writes.
+
+Outside scope: none new
+Concerns: none
+Question or blocker: none

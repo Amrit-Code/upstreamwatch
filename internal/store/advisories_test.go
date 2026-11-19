@@ -213,6 +213,21 @@ func TestSaveAdvisory_InsertTakesSignals(t *testing.T) {
 	}
 }
 
+func TestSaveAdvisory_InsertWithoutEPSSStoresNullEPSSTime(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	// EPSSAt is set but HasEPSS is false: no EPSS column is stored.
+	advSave(t, db, model.Advisory{ID: "CVE-2026-8", EPSS: 0.5, EPSSPercentile: 0.9, EPSSAt: day(2)})
+	if n := count(t, db, `SELECT COUNT(*) FROM advisories
+		WHERE id = 'CVE-2026-8' AND epss IS NULL AND epss_percentile IS NULL AND epss_ts IS NULL`); n != 1 {
+		t.Errorf("advisory rows with NULL epss, epss_percentile and epss_ts = %d, want 1", n)
+	}
+	want := []model.Advisory{{ID: "CVE-2026-8"}}
+	if got := advListAll(t, db); !reflect.DeepEqual(got, want) {
+		t.Errorf("ListAdvisories() = %+v, want %+v", got, want)
+	}
+}
+
 func TestSaveAdvisory_Errors(t *testing.T) {
 	t.Parallel()
 	badEvent := advSample("GO-2026-0002")
@@ -473,10 +488,22 @@ func TestReplaceMatches_Invalid(t *testing.T) {
 	}
 	before := advMatches(t, db, repoID)
 
-	noAdvisory, noInterval, unstored := valid, valid, valid
+	// Another repo holds a match on its own interval for the same advisory.
+	otherRepo, otherIvs := advSeedRepo(t, db, "example-worker", openInterval(pkgLibA, "v1.0.0", 1))
+	if err := db.ReplaceMatches(t.Context(), otherRepo, []model.AdvisoryMatch{{RepoID: otherRepo,
+		DepVersionID: otherIvs[0].ID, AdvisoryID: "GO-2026-0001", ExposedFrom: day(1),
+		Confidence: model.ConfidenceLow}}); err != nil {
+		t.Fatalf("ReplaceMatches(other repo) error = %v", err)
+	}
+	otherBefore := advMatches(t, db, otherRepo)
+
+	noAdvisory, noInterval, unstored, foreign, unknownInterval := valid, valid, valid, valid, valid
 	noAdvisory.AdvisoryID = ""
 	noInterval.DepVersionID = 0
 	unstored.AdvisoryID = "GO-2026-9999"
+	// Right repo ID, but the other repo's interval: the upsert would move its row.
+	foreign.DepVersionID = otherIvs[0].ID
+	unknownInterval.DepVersionID = otherIvs[0].ID + 1000
 	tests := []struct {
 		name    string
 		matches []model.AdvisoryMatch
@@ -485,6 +512,8 @@ func TestReplaceMatches_Invalid(t *testing.T) {
 		{"zero interval", []model.AdvisoryMatch{noInterval}},
 		{"duplicate pair", []model.AdvisoryMatch{valid, valid}},
 		{"advisory not stored", []model.AdvisoryMatch{unstored}},
+		{"interval of another repo", []model.AdvisoryMatch{valid, foreign}},
+		{"interval not stored", []model.AdvisoryMatch{valid, unknownInterval}},
 	}
 	for _, tt := range tests {
 		if err := db.ReplaceMatches(t.Context(), repoID, tt.matches); err == nil {
@@ -492,6 +521,9 @@ func TestReplaceMatches_Invalid(t *testing.T) {
 		}
 		if g := advMatches(t, db, repoID); !reflect.DeepEqual(g, before) {
 			t.Errorf("%s: matches = %+v, want unchanged %+v", tt.name, g, before)
+		}
+		if g := advMatches(t, db, otherRepo); !reflect.DeepEqual(g, otherBefore) {
+			t.Errorf("%s: other repo's matches = %+v, want unchanged %+v", tt.name, g, otherBefore)
 		}
 	}
 }

@@ -352,7 +352,8 @@ func advPlaceholders(n int) string {
 
 // SaveAdvisory upserts a's advisories row and replaces its advisory_affected
 // rows with a.Affected, in one transaction. A new row takes every column from
-// a; an existing row keeps its exploit signals (kev, kev_added_ts, epss,
+// a, with epss, epss_percentile and epss_ts NULL when a.HasEPSS is false; an
+// existing row keeps its exploit signals (kev, kev_added_ts, epss,
 // epss_percentile, epss_ts) and created time and takes every other column from
 // a. A package named by a.Affected that is not stored yet is inserted with its
 // ecosystem and name; an existing one keeps its name and only gains an
@@ -367,12 +368,12 @@ func (db *DB) SaveAdvisory(ctx context.Context, a model.Advisory) error {
 		if err != nil {
 			return fmt.Errorf("encode aliases: %w", err)
 		}
-		var cvss, epss, epssPercentile any
+		var cvss, epss, epssPercentile, epssAt any
 		if a.CVSSVector != "" {
 			cvss = a.CVSSScore
 		}
 		if a.HasEPSS {
-			epss, epssPercentile = a.EPSS, a.EPSSPercentile
+			epss, epssPercentile, epssAt = a.EPSS, a.EPSSPercentile, formatTime(a.EPSSAt)
 		}
 		kev := 0
 		if a.KEV {
@@ -397,7 +398,7 @@ func (db *DB) SaveAdvisory(ctx context.Context, a model.Advisory) error {
 				updated_ts = excluded.updated_ts`,
 			a.ID, aliases, nullText(a.Summary), nullText(a.Details), nullText(string(a.Severity)), cvss,
 			nullText(a.CVSSVector), formatTime(a.Published), formatTime(a.Modified), formatTime(a.Withdrawn),
-			kev, formatTime(a.KEVAddedAt), epss, epssPercentile, formatTime(a.EPSSAt), advNullBytes(a.Raw),
+			kev, formatTime(a.KEVAddedAt), epss, epssPercentile, epssAt, advNullBytes(a.Raw),
 			now, now); err != nil {
 			return fmt.Errorf("write advisory: %w", err)
 		}
@@ -660,9 +661,9 @@ type advMatchKey struct {
 
 // ReplaceMatches makes matches the complete set of advisory matches for
 // repoID, in one transaction. Every match must have RepoID equal to repoID, a
-// non-empty AdvisoryID and a non-zero DepVersionID, and no two may share a
-// (DepVersionID, AdvisoryID) pair; otherwise it returns an error and writes
-// nothing. A row whose pair is in matches keeps its ID and has every column
+// non-empty AdvisoryID and a non-zero DepVersionID naming an interval of
+// repoID, and no two may share a (DepVersionID, AdvisoryID) pair; otherwise it
+// returns an error and writes nothing. A row whose pair is in matches keeps its ID and has every column
 // rewritten from the match; missing pairs are inserted, and the repo's other
 // rows are deleted.
 func (db *DB) ReplaceMatches(ctx context.Context, repoID int64, matches []model.AdvisoryMatch) error {
@@ -684,6 +685,17 @@ func (db *DB) ReplaceMatches(ctx context.Context, repoID int64, matches []model.
 		wanted[k] = true
 	}
 	err := db.InTx(ctx, func(tx *DB) error {
+		// The upsert below rewrites repo_id, so a match naming another repo's
+		// interval would move that repo's row; refuse it before any write.
+		owned, err := tx.advRepoIntervalIDs(ctx, repoID)
+		if err != nil {
+			return err
+		}
+		for _, m := range matches {
+			if !owned[m.DepVersionID] {
+				return fmt.Errorf("interval %d of advisory %s is not an interval of the repo", m.DepVersionID, m.AdvisoryID)
+			}
+		}
 		rows, err := tx.q.QueryContext(ctx,
 			`SELECT id, dep_version_id, advisory_id FROM advisory_matches WHERE repo_id = ? ORDER BY id`, repoID)
 		if err != nil {
@@ -740,6 +752,27 @@ func (db *DB) ReplaceMatches(ctx context.Context, repoID int64, matches []model.
 		return fmt.Errorf("replace matches of repo %d: %w", repoID, err)
 	}
 	return nil
+}
+
+// advRepoIntervalIDs returns the dep_versions row IDs of repoID as a set.
+func (db *DB) advRepoIntervalIDs(ctx context.Context, repoID int64) (map[int64]bool, error) {
+	rows, err := db.q.QueryContext(ctx, `SELECT id FROM dep_versions WHERE repo_id = ?`, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("read intervals of the repo: %w", err)
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("read intervals of the repo: %w", err)
+		}
+		ids[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read intervals of the repo: %w", err)
+	}
+	return ids, nil
 }
 
 // ListAllIntervals returns every stored dependency interval of every repo,

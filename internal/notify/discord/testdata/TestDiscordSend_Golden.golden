@@ -1,0 +1,56 @@
+{
+  "content": "upstreamwatch — 2026-11-18 — 9 new, 4 changed\n… and 3 more https://upw.example.com/",
+  "embeds": [
+    {
+      "title": "[A] high  GO-2026-4866  pkg:golang/toolchain 1.26.0  (repo: server)",
+      "description": "net/http: request smuggling via chunked\\_encoding ... fixed in 1.26.4.\nKEV: no. EPSS 0.12 (p71).",
+      "url": "https://upw.example.com/f/1"
+    },
+    {
+      "title": "[A] critical  GHSA-xxxx  @​everyone see \\[x\\](http://evil)",
+      "description": "\\*bold\\* \\_it\\_ \\~strike\\~ \\`code\\` \\|spoiler\\| \\> quote \\\\ back",
+      "url": "https://upw.example.com/f/2"
+    },
+    {
+      "title": "[A] medium  GO-2026-4003  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/3"
+    },
+    {
+      "title": "[A] medium  GO-2026-4004  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/4"
+    },
+    {
+      "title": "[A] medium  GO-2026-4005  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/5"
+    },
+    {
+      "title": "[A] medium  GO-2026-4006  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/6"
+    },
+    {
+      "title": "[A] medium  GO-2026-4007  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/7"
+    },
+    {
+      "title": "[A] medium  GO-2026-4008  pkg:golang/example.com/lib 1.0.0",
+      "description": "Exposed since 2026-09-14 — confidence high",
+      "url": "https://upw.example.com/f/8"
+    },
+    {
+      "title": "[A] low  PYSEC-2026-2009  requests 2.31.0",
+      "description": "now has a fixed version (2.32.5)"
+    },
+    {
+      "title": "[A] low  PYSEC-2026-2010  requests 2.31.0",
+      "description": "now has a fixed version (2.32.5)"
+    }
+  ],
+  "allowed_mentions": {
+    "parse": []
+  }
+}

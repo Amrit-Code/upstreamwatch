@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Findings - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+</nav>
+</header>
+<main>
+<h1>Findings</h1>
+<table>
+<thead>
+<tr><th>Kind</th><th>Rank reason</th><th class="num">Score</th><th>First seen (UTC)</th><th>State</th></tr>
+</thead>
+<tbody>
+<tr><td>job_failure</td><td class="reason">job ingest failed twice in a row</td><td class="num">10.0</td><td>2026-03-01 12:00</td><td>open</td></tr>
+<tr><td>advisory</td><td class="reason">GHSA-xxxx-yyyy-zzzz affects github.com/example-org/example-lib &lt;script&gt;alert(1)&lt;/script&gt; &lt;/pre&gt; javascript:alert(1)</td><td class="num">7.2</td><td>2026-02-28 10:00</td><td>acked</td></tr>
+<tr><td>issue</td><td class="reason">upstream issue &#34;leak &amp; crash&#34; matches a used symbol</td><td class="num">3.0</td><td>2026-02-26 12:00</td><td>open</td></tr>
+</tbody>
+</table>
+</main>
+</body>
+</html>

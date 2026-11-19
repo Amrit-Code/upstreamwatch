@@ -1,0 +1,17 @@
+{{define "content" -}}
+<h1>{{.Title}}</h1>
+{{if .Findings -}}
+<table>
+<thead>
+<tr><th>Kind</th><th>Rank reason</th><th class="num">Score</th><th>First seen (UTC)</th><th>State</th></tr>
+</thead>
+<tbody>
+{{range .Findings -}}
+<tr><td>{{.Kind}}</td><td class="reason">{{.RankReason}}</td><td class="num">{{.Score}}</td><td>{{.FirstSeen}}</td><td>{{.State}}</td></tr>
+{{end -}}
+</tbody>
+</table>
+{{- else -}}
+<p class="empty">No open findings.</p>
+{{- end}}
+{{- end}}

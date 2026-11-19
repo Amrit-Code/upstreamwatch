@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 )
@@ -64,41 +63,6 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	// The status is already sent; a write error means the client went away.
 	_, _ = w.Write(buf.Bytes())
-}
-
-// findingsPage is the view data of the findings page.
-type findingsPage struct {
-	Title    string
-	Findings []findingRow
-}
-
-// findingRow is one row of the findings table, already formatted.
-type findingRow struct {
-	Kind       string
-	RankReason string
-	Score      string
-	FirstSeen  string
-	State      string
-}
-
-func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
-	findings, err := s.findings.OpenFindings(r.Context())
-	if err != nil {
-		s.logger.Error("load findings failed", "error", err.Error())
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	page := findingsPage{Title: "Findings", Findings: make([]findingRow, 0, len(findings))}
-	for _, f := range findings {
-		page.Findings = append(page.Findings, findingRow{
-			Kind:       string(f.Kind),
-			RankReason: f.RankReason,
-			Score:      fmt.Sprintf("%.1f", f.Score),
-			FirstSeen:  f.FirstSeenAt.UTC().Format("2006-01-02 15:04"),
-			State:      string(f.State.State),
-		})
-	}
-	s.render(w, http.StatusOK, "findings", page)
 }
 
 // render executes a page into a buffer first, so a template failure becomes a

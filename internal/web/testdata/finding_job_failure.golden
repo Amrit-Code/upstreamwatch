@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finding 7 - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+<a href="/repos">Repositories</a>
+</nav>
+</header>
+<main>
+<h1>Finding 7</h1>
+<dl class="meta">
+<dt>Kind</dt><dd>job_failure</dd>
+<dt>Score</dt><dd>50.0</dd>
+<dt>Rank reason</dt><dd class="reason">job ingest failed: fetch example-org/example-server: 502 bad gateway</dd>
+<dt>State</dt><dd>open</dd>
+</dl>
+<section class="actions">
+<h2>Change state</h2>
+<form method="post" action="/f/7/ack">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Ack</button>
+</form>
+<form method="post" action="/f/7/snooze">
+<label>Snooze for <select name="for">
+<option value="1d">1 day</option>
+<option value="7d">7 days</option>
+<option value="30d">30 days</option>
+</select></label>
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Snooze</button>
+</form>
+<form method="post" action="/f/7/dismiss">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Dismiss</button>
+</form>
+</section>
+</main>
+</body>
+</html>

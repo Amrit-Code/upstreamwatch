@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finding 12 - upstreamwatch</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<p class="product">upstreamwatch</p>
+<nav>
+<a href="/">Findings</a>
+<a href="/repos">Repositories</a>
+</nav>
+</header>
+<main>
+<h1>Finding 12</h1>
+<dl class="meta">
+<dt>Kind</dt><dd>advisory</dd>
+<dt>Score</dt><dd>8.4</dd>
+<dt>Rank reason</dt><dd class="reason">high severity, still exposed, known exploited</dd>
+<dt>State</dt><dd>acked</dd>
+<dt>Note</dt><dd class="reason">upgrade planned
+next sprint &lt;b&gt;</dd>
+<dt>Changed (UTC)</dt><dd>2026-03-01 11:00 by web</dd>
+<dt>Repository</dt><dd><a href="/repos/example-server">example-server</a></dd>
+<dt>Package</dt><dd>pkg:golang/github.com/example-org/example-lib</dd>
+<dt>Version</dt><dd>v1.2.0</dd>
+<dt>Manifest</dt><dd>go.mod</dd>
+</dl>
+<section class="actions">
+<h2>Change state</h2>
+<form method="post" action="/f/12/ack">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Ack</button>
+</form>
+<form method="post" action="/f/12/snooze">
+<label>Snooze for <select name="for">
+<option value="1d">1 day</option>
+<option value="7d">7 days</option>
+<option value="30d">30 days</option>
+</select></label>
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Snooze</button>
+</form>
+<form method="post" action="/f/12/dismiss">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Dismiss</button>
+</form>
+<form method="post" action="/f/12/reopen">
+<button type="submit">Reopen</button>
+</form>
+</section>
+<h2>Advisory GHSA-xxxx-yyyy-zzzz</h2>
+<dl class="meta">
+<dt>Aliases</dt><dd>CVE-2026-12345, GO-2026-0001</dd>
+<dt>Summary</dt><dd class="reason">Path traversal in example-lib &lt;script&gt;alert(1)&lt;/script&gt; &lt;/pre&gt; javascript:alert(1)</dd>
+<dt>Severity</dt><dd>high</dd>
+<dt>CVSS</dt><dd class="wrap">8.1 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)</dd>
+<dt>Published</dt><dd>2026-01-10</dd>
+<dt>Modified</dt><dd>2026-02-01</dd>
+<dt>Known exploited (KEV)</dt><dd>yes, added 2026-02-15</dd>
+<dt>EPSS</dt><dd>score 0.9741, percentile 0.9987</dd>
+</dl>
+<h3>Details</h3>
+<pre class="details">Line one.
+
+**not markdown** &lt;b&gt;bold&lt;/b&gt;
+&lt;script&gt;alert(1)&lt;/script&gt; &lt;/pre&gt; javascript:alert(1)
+[link](javascript:alert(1))</pre>
+<h3>Exposures</h3>
+<table>
+<thead>
+<tr><th>Version</th><th>Manifest</th><th>Exposed from</th><th>Exposed to</th><th>Fixed version</th><th>Confidence</th><th>Confidence reason</th></tr>
+</thead>
+<tbody>
+<tr><td>v1.1.0</td><td>go.mod</td><td>2026-01-10<br><span class="pinned">pinned 2025-11-03</span></td><td>2026-01-20</td><td>v1.2.1</td><td>high</td><td class="reason">exact version inside a SEMVER range</td></tr>
+<tr class="open"><td>v1.2.0</td><td>go.mod</td><td>2026-01-20</td><td>still exposed</td><td>v1.2.1</td><td>medium</td><td class="reason">ECOSYSTEM range &lt;script&gt;alert(1)&lt;/script&gt; &lt;/pre&gt; javascript:alert(1)</td></tr>
+</tbody>
+</table>
+<p class="note">Where a pin date is shown, the version was pinned before the exposure starts: vulns.exposure_basis starts the exposure at the advisory's publication.</p>
+<p class="note">Exposure windows are estimates: they are built from first-parent commit dates and the advisory's dates, not from what was deployed.</p>
+</main>
+</body>
+</html>

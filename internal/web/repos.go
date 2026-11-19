@@ -160,7 +160,7 @@ func newIntervalRow(iv model.DepInterval, on string) intervalRow {
 		Open:       iv.IsOpen(),
 		Package:    iv.Package.PURL,
 		PackageURL: "?pkg=" + url.QueryEscape(iv.Package.PURL),
-		Version:    iv.Version,
+		Version:    intervalVersion(iv),
 		From:       iv.From.UTC().Format(time.DateOnly),
 		To:         "now",
 		Direct:     directLabel(iv.Direct),
@@ -168,9 +168,6 @@ func newIntervalRow(iv model.DepInterval, on string) intervalRow {
 	}
 	if on != "" {
 		row.PackageURL += "&on=" + url.QueryEscape(on)
-	}
-	if row.Version == "" && iv.Requirement != "" {
-		row.Version = "(" + iv.Requirement + ")"
 	}
 	if !iv.IsOpen() {
 		row.To = iv.To.UTC().Format(time.DateOnly)

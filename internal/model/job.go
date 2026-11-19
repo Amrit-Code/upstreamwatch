@@ -4,6 +4,10 @@ package model
 type Scope struct {
 	// RepoSlug limits the run to one target repo. Empty means all repos.
 	RepoSlug string
+	// Rebuild asks a job that builds state from history (the timeline) to
+	// discard what it stored for the repos in scope and start from the root.
+	// Jobs without such state ignore it.
+	Rebuild bool
 }
 
 // All reports whether the scope covers every target repo.

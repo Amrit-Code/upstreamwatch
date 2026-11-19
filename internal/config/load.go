@@ -29,8 +29,15 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	// io.EOF means the file holds no document; the defaults then stand.
-	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+	err = dec.Decode(&f)
+	switch {
+	case errors.Is(err, io.EOF):
+	case err != nil:
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+	default:
+		if err := onlyEmptyDocuments(dec); err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		}
 	}
 
 	cfg, errs := convert(f, getenv)
@@ -42,6 +49,43 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// errMultiDoc is returned when the config file holds a second document with
+// content.
+var errMultiDoc = errors.New("more than one YAML document")
+
+// onlyEmptyDocuments reads the documents after the first until io.EOF. Each
+// is decoded only to see whether it has content; an empty or null document (a
+// bare trailing ---, one holding only a comment, ~ or null) is ignored. Any
+// other document, or a decode error, is errMultiDoc.
+func onlyEmptyDocuments(dec *yaml.Decoder) error {
+	for {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil || !emptyDocument(&doc) {
+			return errMultiDoc
+		}
+	}
+}
+
+// emptyDocument reports whether n is a document with no content or whose
+// only content is a null scalar.
+func emptyDocument(n *yaml.Node) bool {
+	if n.Kind != yaml.DocumentNode {
+		return false
+	}
+	switch len(n.Content) {
+	case 0:
+		return true
+	case 1:
+		c := n.Content[0]
+		return c.Kind == yaml.ScalarNode && c.Tag == "!!null"
+	}
+	return false
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)

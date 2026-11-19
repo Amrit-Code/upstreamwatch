@@ -15,6 +15,6 @@ type RunStore interface {
 // FindingStore reads findings with their state.
 type FindingStore interface {
 	// ListOpenFindings returns unresolved findings whose state is open or
-	// acked, highest score first.
+	// acked, highest score first, then lowest ID.
 	ListOpenFindings(ctx context.Context) ([]model.Finding, error)
 }

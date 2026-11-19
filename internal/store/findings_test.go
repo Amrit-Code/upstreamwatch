@@ -144,6 +144,60 @@ func TestDB_UpsertFinding_JobFailureHasNullRefs(t *testing.T) {
 	}
 }
 
+func TestDB_UpsertFinding_UpdatesOnlyDepVersionLink(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	ctx := t.Context()
+	repoID, packageID, advisoryID := seedAdvisoryParents(t, db)
+	exec(t, db, `INSERT INTO manifests (id, repo_id, path, created_ts, updated_ts) VALUES (3, ?, 'go.mod', ?, ?)`, repoID, ts0, ts0)
+	exec(t, db, `INSERT INTO commits (id, repo_id, sha, created_ts, updated_ts) VALUES (4, ?, 'abc123', ?, ?)`, repoID, ts0, ts0)
+	for _, id := range []int64{5, 8} {
+		exec(t, db, `INSERT INTO dep_versions (id, repo_id, package_id, manifest_id, version, from_commit_id, created_ts, updated_ts)
+			VALUES (?, ?, ?, 3, 'v1.2.0', 4, ?, ?)`, id, repoID, packageID, ts0, ts0)
+	}
+	const fp = "advisory|1|2|GO-2026-0001"
+	first, err := db.UpsertFinding(ctx, model.Finding{
+		Kind: model.KindAdvisory, RepoID: repoID, PackageID: packageID, DepVersionID: 5,
+		AdvisoryID: advisoryID, Fingerprint: fp, LastChangedAt: t0,
+	})
+	if err != nil {
+		t.Fatalf("first UpsertFinding() error = %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		depVersionID int64
+		wantValid    bool
+	}{
+		{name: "new interval", depVersionID: 8, wantValid: true},
+		{name: "zero stores NULL", depVersionID: 0, wantValid: false},
+	}
+	for _, tt := range tests {
+		// The other links are left out of the upsert on purpose: they must
+		// keep the values the finding was created with.
+		got, err := db.UpsertFinding(ctx, model.Finding{
+			Kind: model.KindAdvisory, DepVersionID: tt.depVersionID, Fingerprint: fp, LastChangedAt: t0.Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("%s: UpsertFinding() error = %v", tt.name, err)
+		}
+		if got.ID != first.ID || got.DepVersionID != tt.depVersionID {
+			t.Errorf("%s: UpsertFinding() = ID %d dep_version %d, want ID %d dep_version %d",
+				tt.name, got.ID, got.DepVersionID, first.ID, tt.depVersionID)
+		}
+		if got.RepoID != repoID || got.PackageID != packageID || got.AdvisoryID != advisoryID || !got.FirstSeenAt.Equal(t0) {
+			t.Errorf("%s: UpsertFinding() = %+v, want repo, package, advisory and first seen unchanged", tt.name, got)
+		}
+		var dv sql.NullInt64
+		if err := db.pool.QueryRowContext(ctx, "SELECT dep_version_id FROM findings WHERE id = ?", first.ID).Scan(&dv); err != nil {
+			t.Fatalf("read dep_version_id: %v", err)
+		}
+		if dv.Valid != tt.wantValid || dv.Int64 != tt.depVersionID {
+			t.Errorf("%s: stored dep_version_id = %v, want %d (valid %v)", tt.name, dv, tt.depVersionID, tt.wantValid)
+		}
+	}
+}
+
 func TestDB_UpsertFinding_Errors(t *testing.T) {
 	t.Parallel()
 

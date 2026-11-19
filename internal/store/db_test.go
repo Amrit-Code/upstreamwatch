@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,6 +79,44 @@ func TestOpen_CreatesDirAndFileWithModes(t *testing.T) {
 		if got := info.Mode().Perm(); got != tc.want {
 			t.Errorf("mode of %s = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestOpen_TightensExistingDataDir(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on windows")
+	}
+	tests := []struct {
+		name string
+		mode fs.FileMode
+		want fs.FileMode
+	}{
+		{name: "world readable", mode: 0o755, want: 0o700},
+		{name: "group readable", mode: 0o750, want: 0o700},
+		{name: "others writable only", mode: 0o702, want: 0o700},
+		{name: "already private", mode: 0o700, want: 0o700},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "data")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatalf("Mkdir() error = %v", err)
+			}
+			// Chmod is not subject to the umask, so the mode is exact.
+			if err := os.Chmod(dir, tt.mode); err != nil {
+				t.Fatalf("Chmod(%v) error = %v", tt.mode, err)
+			}
+			openTestDB(t, filepath.Join(dir, "upw.sqlite"))
+			info, err := os.Stat(dir)
+			if err != nil {
+				t.Fatalf("Stat(%s) error = %v", dir, err)
+			}
+			if got := info.Mode().Perm(); got != tt.want {
+				t.Errorf("Open() with data dir mode %v left mode %v, want %v", tt.mode, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -420,6 +459,26 @@ func TestSchema_DepVersionDeleteBehaviour(t *testing.T) {
 
 	exec(t, db, `INSERT INTO dep_versions (id, repo_id, package_id, manifest_id, version, from_commit_id, created_ts, updated_ts)
 		VALUES (8, ?, ?, 3, 'v1.3.0', 4, ?, ?)`, repoID, packageID, ts0, ts0)
+
+	// The next match run upserts the same fingerprint against the recreated
+	// interval, which relinks the finding without touching its history.
+	exec(t, db, `UPDATE finding_state SET state = 'acked', changed_by = 'operator' WHERE finding_id = ?`, f.ID)
+	relinked, err := db.UpsertFinding(ctx, model.Finding{
+		Kind: model.KindAdvisory, RepoID: repoID, PackageID: packageID, DepVersionID: 8,
+		AdvisoryID: advisoryID, Fingerprint: "advisory|1|2|GO-2026-0001", LastChangedAt: t0.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("re-upsert UpsertFinding() error = %v", err)
+	}
+	if relinked.ID != f.ID || relinked.DepVersionID != 8 || !relinked.FirstSeenAt.Equal(f.FirstSeenAt) ||
+		relinked.State.State != model.StateAcked {
+		t.Errorf("re-upsert after interval recreation = %+v, want ID %d, dep_version 8, first seen %v, state acked",
+			relinked, f.ID, f.FirstSeenAt)
+	}
+	if got := count(t, db, "SELECT COUNT(*) FROM findings WHERE id = ? AND dep_version_id = 8", f.ID); got != 1 {
+		t.Errorf("finding linked to recreated interval: %d rows, want 1", got)
+	}
+
 	if _, err := db.pool.ExecContext(ctx, "DELETE FROM commits WHERE id = 4"); err == nil {
 		t.Errorf("delete of a commit an interval references succeeded, want a foreign-key error")
 	}

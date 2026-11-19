@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
@@ -786,5 +787,310 @@ func TestHTTPClient_AppliesPolicy(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	if _, err := allowed.Get("http://user:pw@" + u.Host + "/"); !errors.Is(err, errUserinfo) {
 		t.Errorf("Get(userinfo) error = %v, want the userinfo refusal", err)
+	}
+}
+
+// pathRecorder records the headers of the latest request to each path,
+// redirects the paths in its table, answers the paths in statuses with that
+// status and no body, and answers anything else 200 "done".
+type pathRecorder struct {
+	mu        sync.Mutex
+	headers   map[string]http.Header
+	redirects map[string]string // path -> absolute Location
+	statuses  map[string]int    // path -> status
+}
+
+func (p *pathRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	if p.headers == nil {
+		p.headers = map[string]http.Header{}
+	}
+	p.headers[r.URL.Path] = r.Header.Clone()
+	to, redirect := p.redirects[r.URL.Path]
+	status, scripted := p.statuses[r.URL.Path]
+	p.mu.Unlock()
+	switch {
+	case redirect:
+		http.Redirect(w, r, to, http.StatusFound)
+	case scripted:
+		w.WriteHeader(status)
+	default:
+		fmt.Fprint(w, "done")
+	}
+}
+
+func (p *pathRecorder) header(path string) (http.Header, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h, ok := p.headers[path]
+	return h, ok
+}
+
+// redirectHeaders are the headers every redirect test sends.
+func redirectHeaders() http.Header {
+	return http.Header{
+		"Authorization": {"Bearer tok-redirect"},
+		"X-Api-Key":     {"key-redirect"},
+		"Cookie":        {"session=cookie-redirect"},
+		"If-None-Match": {`"etag-redirect"`},
+		"Accept":        {"application/json"},
+	}
+}
+
+// fetch sends a GET carrying redirectHeaders through Client.Do or through
+// HTTPClient(), as via names.
+func fetch(t *testing.T, via, rawURL string) {
+	t.Helper()
+	switch via {
+	case "Do":
+		c := newTestClient(t, Options{})
+		if _, err := c.Do(t.Context(), Request{URL: rawURL, Header: redirectHeaders()}); err != nil {
+			t.Fatalf("Do(%s) error = %v", rawURL, err)
+		}
+	case "HTTPClient":
+		hc := New(nil, Options{AllowPrivateHosts: []string{"127.0.0.1"}}, nil).HTTPClient()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header = redirectHeaders()
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatalf("HTTPClient().Do(%s) error = %v", rawURL, err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("close body: %v", err)
+		}
+	default:
+		t.Fatalf("unknown client %q", via)
+	}
+}
+
+func TestRedirect_CrossHostStripsHeaders(t *testing.T) {
+	t.Parallel()
+	for _, via := range []string{"Do", "HTTPClient"} {
+		t.Run(via, func(t *testing.T) {
+			t.Parallel()
+			// Both servers listen on 127.0.0.1; their ports differ, so their
+			// hosts (host:port) differ.
+			second := &pathRecorder{}
+			secondSrv := httptest.NewServer(second)
+			t.Cleanup(secondSrv.Close)
+			first := &pathRecorder{redirects: map[string]string{"/start": secondSrv.URL + "/final"}}
+			firstSrv := httptest.NewServer(first)
+			t.Cleanup(firstSrv.Close)
+
+			fetch(t, via, firstSrv.URL+"/start")
+
+			if orig, _ := first.header("/start"); orig.Get("Authorization") != "Bearer tok-redirect" {
+				t.Errorf("first request Authorization = %q, want the adapter's header", orig.Get("Authorization"))
+			}
+			got, ok := second.header("/final")
+			if !ok {
+				t.Fatal("second server not reached")
+			}
+			for _, k := range []string{"Authorization", "X-Api-Key", "Cookie", "If-None-Match", "Referer"} {
+				if v := got.Get(k); v != "" {
+					t.Errorf("redirected request %s = %q, want it removed", k, v)
+				}
+			}
+			if v := got.Get("Accept"); v != "application/json" {
+				t.Errorf("redirected request Accept = %q, want application/json", v)
+			}
+			ua := got.Get("User-Agent")
+			if ua == "" || (via == "Do" && ua != "upstreamwatch") {
+				t.Errorf("redirected request User-Agent = %q, want it kept", ua)
+			}
+		})
+	}
+}
+
+func TestRedirect_SameHostKeepsHeaders(t *testing.T) {
+	t.Parallel()
+	for _, via := range []string{"Do", "HTTPClient"} {
+		t.Run(via, func(t *testing.T) {
+			t.Parallel()
+			rec := &pathRecorder{redirects: map[string]string{}}
+			srv := httptest.NewServer(rec)
+			t.Cleanup(srv.Close)
+			rec.mu.Lock()
+			rec.redirects["/start"] = srv.URL + "/final"
+			rec.mu.Unlock()
+
+			fetch(t, via, srv.URL+"/start")
+
+			got, ok := rec.header("/final")
+			if !ok {
+				t.Fatal("redirect target not reached")
+			}
+			want := redirectHeaders()
+			for k := range want {
+				if g, w := got.Get(k), want.Get(k); g != w {
+					t.Errorf("same-host redirect %s = %q, want %q", k, g, w)
+				}
+			}
+		})
+	}
+}
+
+func TestRedirect_StrippedStaysStripped(t *testing.T) {
+	t.Parallel()
+	for _, via := range []string{"Do", "HTTPClient"} {
+		t.Run(via, func(t *testing.T) {
+			t.Parallel()
+			a := &pathRecorder{redirects: map[string]string{}}
+			aSrv := httptest.NewServer(a)
+			t.Cleanup(aSrv.Close)
+			b := &pathRecorder{redirects: map[string]string{"/bounce": aSrv.URL + "/final"}}
+			bSrv := httptest.NewServer(b)
+			t.Cleanup(bSrv.Close)
+			a.mu.Lock()
+			a.redirects["/start"] = bSrv.URL + "/bounce"
+			a.mu.Unlock()
+
+			fetch(t, via, aSrv.URL+"/start")
+
+			got, ok := a.header("/final")
+			if !ok {
+				t.Fatal("final hop back to the first host not reached")
+			}
+			for _, k := range []string{"X-Api-Key", "Authorization", "Cookie", "If-None-Match"} {
+				if v := got.Get(k); v != "" {
+					t.Errorf("A -> B -> A final request %s = %q, want it still removed", k, v)
+				}
+			}
+			if v := got.Get("Accept"); v != "application/json" {
+				t.Errorf("A -> B -> A final request Accept = %q, want application/json", v)
+			}
+		})
+	}
+}
+
+func TestRedirect_JarCookiesStripped(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		chain      string // "AB" ends on B, "ABA" goes back to A, "AA" stays on A
+		wantCookie bool   // the final request carries the jar's cookie
+	}{
+		{name: "cross port", chain: "AB", wantCookie: false},
+		{name: "A -> B -> A", chain: "ABA", wantCookie: false},
+		{name: "same host", chain: "AA", wantCookie: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A and B share the hostname 127.0.0.1, so a cookie jar, which
+			// ignores ports, offers A's cookie to B as well.
+			a := &pathRecorder{redirects: map[string]string{}}
+			aSrv := httptest.NewServer(a)
+			t.Cleanup(aSrv.Close)
+			b := &pathRecorder{redirects: map[string]string{"/bounce": aSrv.URL + "/final"}}
+			bSrv := httptest.NewServer(b)
+			t.Cleanup(bSrv.Close)
+			final, finalPath := b, "/final"
+			a.mu.Lock()
+			switch tt.chain {
+			case "AB":
+				a.redirects["/start"] = bSrv.URL + "/final"
+			case "ABA":
+				a.redirects["/start"] = bSrv.URL + "/bounce"
+				final = a
+			case "AA":
+				a.redirects["/start"] = aSrv.URL + "/final"
+				final = a
+			}
+			a.mu.Unlock()
+
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatalf("cookiejar.New() error = %v", err)
+			}
+			aURL, err := url.Parse(aSrv.URL)
+			if err != nil {
+				t.Fatalf("parse server URL: %v", err)
+			}
+			jar.SetCookies(aURL, []*http.Cookie{{Name: "session", Value: "jar-secret"}})
+			hc := New(nil, Options{AllowPrivateHosts: []string{"127.0.0.1"}}, nil).HTTPClient()
+			hc.Jar = jar
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, aSrv.URL+"/start", nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			resp, err := hc.Do(req)
+			if err != nil {
+				t.Fatalf("HTTPClient().Do() error = %v", err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatalf("close body: %v", err)
+			}
+
+			if first, _ := a.header("/start"); first.Get("Cookie") != "session=jar-secret" {
+				t.Fatalf("first request Cookie = %q, want the jar's cookie", first.Get("Cookie"))
+			}
+			got, ok := final.header(finalPath)
+			if !ok {
+				t.Fatal("final hop not reached")
+			}
+			if c := got.Get("Cookie"); (c != "") != tt.wantCookie {
+				t.Errorf("chain %s final request Cookie = %q, want cookie sent %v", tt.chain, c, tt.wantCookie)
+			}
+		})
+	}
+}
+
+func TestDo_RedirectEndingIn304(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		crossHost bool
+	}{
+		{name: "cross host 304 is a status error", crossHost: true},
+		{name: "same host 304 is not modified", crossHost: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a := &pathRecorder{redirects: map[string]string{}, statuses: map[string]int{"/final": http.StatusNotModified}}
+			aSrv := httptest.NewServer(a)
+			t.Cleanup(aSrv.Close)
+			b := &pathRecorder{statuses: map[string]int{"/final": http.StatusNotModified}}
+			bSrv := httptest.NewServer(b)
+			t.Cleanup(bSrv.Close)
+			final := a
+			a.mu.Lock()
+			if tt.crossHost {
+				a.redirects["/start"] = bSrv.URL + "/final"
+				final = b
+			} else {
+				a.redirects["/start"] = aSrv.URL + "/final"
+			}
+			a.mu.Unlock()
+			c := newTestClient(t, Options{})
+
+			got, err := c.Do(t.Context(), Request{URL: aSrv.URL + "/start", Validators: ValidatorsCaller, ETag: `"e1"`})
+
+			sent, ok := final.header("/final")
+			if !ok {
+				t.Fatal("final hop not reached")
+			}
+			if tt.crossHost {
+				if v := sent.Get("If-None-Match"); v != "" {
+					t.Errorf("cross-host hop If-None-Match = %q, want it removed", v)
+				}
+				se, ok := errors.AsType[*StatusError](err)
+				if !ok || se.Status != http.StatusNotModified {
+					t.Errorf("Do() = %+v, error %v, want *StatusError 304", got, err)
+				}
+				return
+			}
+			if v := sent.Get("If-None-Match"); v != `"e1"` {
+				t.Errorf("same-host hop If-None-Match = %q, want \"e1\"", v)
+			}
+			if err != nil || !got.NotModified {
+				t.Errorf("Do() = %+v, error %v, want NotModified and no error", got, err)
+			}
+		})
 	}
 }

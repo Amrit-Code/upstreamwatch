@@ -20,9 +20,15 @@ var t0 = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 const wantCSP = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'"
 
+// testHost is the Host header handler tests send. newTestServer sets Listen
+// to 127.0.0.1:0, and a handler used without Serve allows the Listen value
+// as given.
+const testHost = "127.0.0.1:0"
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
+	req.Host = testHost
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -109,7 +115,7 @@ func TestHealth_StoreError(t *testing.T) {
 	t.Parallel()
 	storeErr := errors.New("sqlite: database disk image is malformed")
 	var logs bytes.Buffer
-	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, web.Options{},
+	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, web.Options{Listen: testHost},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -240,6 +246,7 @@ func TestRoutes_NotFoundAndMethod(t *testing.T) {
 			t.Parallel()
 			s := newTestServer(t, &fakeHealth{}, &fakeFindings{})
 			req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path, nil)
+			req.Host = testHost
 			if tt.fetchSite != "" {
 				req.Header.Set("Sec-Fetch-Site", tt.fetchSite)
 			}
@@ -266,6 +273,8 @@ func TestNewServer_BadBaseURL(t *testing.T) {
 		{name: "no scheme", baseURL: "upw.example.net", wantErr: true},
 		{name: "ftp scheme", baseURL: "ftp://upw.example.net", wantErr: true},
 		{name: "unparsable", baseURL: "https://upw.example.net:bad port", wantErr: true},
+		{name: "empty hostname with port", baseURL: "https://:443", wantErr: true},
+		{name: "empty hostname with path", baseURL: "http://:8080/upw", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -291,6 +300,7 @@ func TestNewServer_TrustsBaseURLOrigin(t *testing.T) {
 	// A trusted origin passes the cross-origin check, so the mux answers 405
 	// for the GET-only route instead of 403.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+	req.Host = "upw.example.net"
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Set("Origin", "https://upw.example.net")
 	rec := httptest.NewRecorder()
@@ -349,6 +359,86 @@ func TestServe_ShutsDownOnCancel(t *testing.T) {
 	}
 }
 
+// blockingHealth is a HealthReader whose LastRuns waits for its context to
+// end, standing in for a handler stuck on slow I/O.
+type blockingHealth struct {
+	entered  chan struct{} // closed when LastRuns starts
+	released chan struct{} // closed when its context ends
+}
+
+func (b *blockingHealth) LastRuns(ctx context.Context) ([]model.Run, error) {
+	close(b.entered)
+	<-ctx.Done()
+	close(b.released)
+	return nil, ctx.Err()
+}
+
+func TestServe_ClosesConnectionsAfterShutdownDeadline(t *testing.T) {
+	t.Parallel()
+	health := &blockingHealth{entered: make(chan struct{}), released: make(chan struct{})}
+	capture := newAddrCapture()
+	s, err := web.NewServer(health, &fakeFindings{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	web.SetShutdownTimeout(s, 50*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+
+	var addr string
+	select {
+	case addr = <-capture.addrs:
+	case err := <-done:
+		t.Fatalf("Serve() returned before listening: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("no \"http server listening\" log within 2s")
+	}
+
+	// The client never gives up on its own, so only the server closing the
+	// connection can release the handler.
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/health", nil)
+		if err != nil {
+			t.Errorf("build request: %v", err)
+			return
+		}
+		if resp, err := client.Do(req); err == nil {
+			resp.Body.Close() // the response does not matter, only that the call returns
+		}
+	}()
+	select {
+	case <-health.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler not entered within 2s")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Serve() error = %v, want the shutdown deadline error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve() did not return within 2s of cancel")
+	}
+	select {
+	case <-health.released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight handler not released within 2s of the shutdown deadline")
+	}
+	select {
+	case <-clientDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client request did not return within 2s of the shutdown deadline")
+	}
+}
+
 func TestServe_ListenError(t *testing.T) {
 	t.Parallel()
 	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:not-a-port"}, discardLogger())
@@ -357,5 +447,169 @@ func TestServe_ListenError(t *testing.T) {
 	}
 	if err := s.Serve(t.Context()); err == nil {
 		t.Error("Serve() error = nil, want a listen error")
+	}
+}
+
+func TestHostCheck(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		listen, baseURL string
+		host            string
+		want            int
+	}{
+		{listen: "127.0.0.1:8080", host: "127.0.0.1:8080", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", host: "localhost:8080", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", host: "LOCALHOST:8080", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", host: "attacker.example", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", host: "127.0.0.1:9999", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", host: "127.0.0.1", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", host: "[::1]:8080", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", host: "", want: http.StatusMisdirectedRequest},
+		{listen: "0.0.0.0:8080", host: "127.0.0.1:8080", want: http.StatusOK},
+		{listen: "0.0.0.0:8080", host: "localhost:8080", want: http.StatusOK},
+		{listen: "0.0.0.0:8080", host: "[::1]:8080", want: http.StatusOK},
+		{listen: "0.0.0.0:8080", host: "10.0.0.5:8080", want: http.StatusMisdirectedRequest},
+		{listen: "0.0.0.0:8080", host: "0.0.0.0:8080", want: http.StatusMisdirectedRequest},
+		{listen: ":8080", host: "localhost:8080", want: http.StatusOK},
+		{listen: ":8080", host: "10.0.0.5:8080", want: http.StatusMisdirectedRequest},
+		{listen: "[::]:8080", host: "[::1]:8080", want: http.StatusOK},
+		{listen: "[::1]:8080", host: "[::1]:8080", want: http.StatusOK},
+		{listen: "[::1]:8080", host: "localhost:8080", want: http.StatusOK},
+		{listen: "[::1]:8080", host: "127.0.0.1:8080", want: http.StatusMisdirectedRequest},
+		{listen: "10.0.0.5:8080", host: "10.0.0.5:8080", want: http.StatusOK},
+		{listen: "10.0.0.5:8080", host: "localhost:8080", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", baseURL: "https://upw.example.ts.net", host: "upw.example.ts.net", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", baseURL: "https://upw.example.ts.net", host: "UPW.Example.ts.net", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", baseURL: "https://upw.example.ts.net", host: "upw.example.ts.net:8443", want: http.StatusMisdirectedRequest},
+		{listen: "127.0.0.1:8080", baseURL: "https://upw.example.ts.net", host: "localhost:8080", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", baseURL: "http://upw.example.net:8443/upw/", host: "upw.example.net:8443", want: http.StatusOK},
+		{listen: "127.0.0.1:8080", baseURL: "http://upw.example.net:8443/upw/", host: "upw.example.net", want: http.StatusMisdirectedRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.listen+" "+tt.baseURL+" "+tt.host, func(t *testing.T) {
+			t.Parallel()
+			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{},
+				web.Options{Listen: tt.listen, BaseURL: tt.baseURL}, discardLogger())
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
+			req.Host = tt.host
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Errorf("Listen %q BaseURL %q, GET /health with Host %q: status = %d, want %d",
+					tt.listen, tt.baseURL, tt.host, rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestHostCheck_RejectionKeepsSecurityHeaders(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:8080"},
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	req.Host = "attacker.example"
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("status = %d, want 421", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if body := rec.Body.String(); body == "" || strings.Contains(body, "<") {
+		t.Errorf("body = %q, want a short plain-text message", body)
+	}
+	log := logs.String()
+	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, `msg="request rejected, host not allowed"`) ||
+		!strings.Contains(log, "host=attacker.example") {
+		t.Errorf("log = %q, want one warn line naming host attacker.example", log)
+	}
+}
+
+func TestHostCheck_RebindingShape(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, &fakeHealth{}, &fakeFindings{})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", nil)
+	req.Host = "attacker.example"
+	req.Header.Set("Origin", "http://attacker.example")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMisdirectedRequest {
+		t.Errorf("rebound POST / status = %d, want 421 (the host check runs before the cross-origin check and the mux)", rec.Code)
+	}
+}
+
+func TestServe_PortZeroAllowsActualAddress(t *testing.T) {
+	t.Parallel()
+	capture := newAddrCapture()
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Serve() error = %v, want nil", err)
+		}
+	})
+
+	var addr string
+	select {
+	case addr = <-capture.addrs:
+	case err := <-done:
+		t.Fatalf("Serve() returned before listening: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("no \"http server listening\" log within 2s")
+	}
+
+	tests := []struct {
+		name string
+		host string // empty sends the address itself
+		want int
+	}{
+		{name: "actual address", want: http.StatusOK},
+		{name: "localhost with actual port", host: "localhost:" + addr[strings.LastIndex(addr, ":")+1:], want: http.StatusOK},
+		{name: "configured port zero", host: "127.0.0.1:0", want: http.StatusMisdirectedRequest},
+		{name: "attacker host", host: "attacker.example", want: http.StatusMisdirectedRequest},
+	}
+	// One connection per request: a pooled transport can leave a dialled but
+	// unused connection that holds Shutdown for 5 seconds.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	for _, tt := range tests {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/health", nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		if tt.host != "" {
+			req.Host = tt.host
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: GET /health: %v", tt.name, err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("close body: %v", err)
+		}
+		if resp.StatusCode != tt.want {
+			t.Errorf("%s: GET http://%s/health with Host %q status = %d, want %d", tt.name, addr, req.Host, resp.StatusCode, tt.want)
+		}
 	}
 }

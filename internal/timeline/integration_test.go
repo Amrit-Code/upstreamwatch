@@ -1,6 +1,7 @@
 package timeline_test
 
 import (
+	"database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -908,4 +909,89 @@ func TestTimeline_ReadsFromClone(t *testing.T) {
 	if clone := s.repo("app").ClonePath; !strings.HasPrefix(clone, s.dataDir) {
 		t.Errorf("ClonePath = %q, want it under the data directory %q", clone, s.dataDir)
 	}
+}
+
+// A PEP 508 direct reference reaches the library parser, which returns the
+// whole string as the package name; the credential in it must reach no row.
+func TestTimeline_DirectReferenceCredentialNotStored(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("pyproject.toml", "[project]\nname = \"example-app\"\nversion = \"0.1.0\"\n"+
+		"dependencies = [\"requests==2.31.0\", \"evil @ git+https://user:SECRET@github.com/example-org/evil.git\"]\n")
+	c1 := up.Commit("add dependencies", day(1))
+
+	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
+	run := s.sync()
+	checkStats(t, run, map[string]int64{"files_read": 1, "deps_dropped": 1, "events_written": 1, "intervals": 1})
+	want := []iv{{"pyproject.toml", "pkg:pypi/requests", "2.31.0", c1, day(1), "", time.Time{}}}
+	if got := ivs(s.intervals("app")); !reflect.DeepEqual(got, want) {
+		t.Errorf("intervals = %+v, want %+v", got, want)
+	}
+
+	// Every column of the tables the timeline writes is read here, outside
+	// the store's own queries, so a column no store method returns is
+	// checked too.
+	db, err := sql.Open("sqlite", filepath.Join(s.dataDir, "upw.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+	for _, table := range []string{"packages", "dep_events", "dep_versions", "manifests", "commits"} {
+		n := scanForSecret(t, db, table)
+		if table == "manifests" || table == "commits" {
+			continue
+		}
+		if n != 1 {
+			t.Errorf("%s has %d rows, want 1 (requests only)", table, n)
+		}
+	}
+}
+
+// scanForSecret reads every row of table, reports any column holding
+// "SECRET" or the dropped package's name in any case, and returns the row
+// count.
+func scanForSecret(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), "SELECT * FROM "+table)
+	if err != nil {
+		t.Fatalf("query %s: %v", table, err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns of %s: %v", table, err)
+	}
+	n := 0
+	for rows.Next() {
+		n++
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan %s: %v", table, err)
+		}
+		for i, v := range vals {
+			var text string
+			switch v := v.(type) {
+			case string:
+				text = v
+			case []byte:
+				text = string(v)
+			}
+			// The package URL lower-cases PyPI names, so match in any case.
+			if lower := strings.ToLower(text); strings.Contains(lower, "secret") || strings.Contains(lower, "evil") {
+				t.Errorf("%s.%s = %q, want no trace of the dropped dependency", table, cols[i], text)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows of %s: %v", table, err)
+	}
+	return n
 }

@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -787,8 +788,8 @@ func TestRun_OneTargetFails(t *testing.T) {
 func TestRun_FailureInLaterBlobChunkKeepsCounters(t *testing.T) {
 	t.Parallel()
 	var commits []model.Commit
-	git := &fakeGit{heads: map[string]string{"alpha": "c500"}, readErrOn: 2}
-	for i := range 501 {
+	git := &fakeGit{heads: map[string]string{"alpha": "c32"}, readErrOn: 2}
+	for i := range 33 {
 		c := commit(fmt.Sprintf("c%d", i), 1, "go.mod")
 		commits = append(commits, c)
 		git.file(c, "go.mod", fmt.Sprintf("pkg:golang/a@v1.0.%d", i))
@@ -807,7 +808,7 @@ func TestRun_FailureInLaterBlobChunkKeepsCounters(t *testing.T) {
 		t.Errorf("ApplyTimeline called %d times, want 0", len(ts.applied))
 	}
 	checkStats(t, got, map[string]int64{
-		"targets": 1, "failed": 1, "commits_walked": 501, "files_read": 500,
+		"targets": 1, "failed": 1, "commits_walked": 33, "files_read": 32,
 	})
 }
 
@@ -1038,8 +1039,8 @@ func (g *cancellingGit) Head(ctx context.Context, repo model.TargetRepo) (string
 func TestRun_ReadsBlobsInChunks(t *testing.T) {
 	t.Parallel()
 	var commits []model.Commit
-	git := &fakeGit{heads: map[string]string{"alpha": "c500"}}
-	for i := range 501 {
+	git := &fakeGit{heads: map[string]string{"alpha": "c64"}}
+	for i := range 65 {
 		c := commit(fmt.Sprintf("c%d", i), 1, "go.mod")
 		commits = append(commits, c)
 		git.file(c, "go.mod", fmt.Sprintf("pkg:golang/a@v1.0.%d", i))
@@ -1053,17 +1054,259 @@ func TestRun_ReadsBlobsInChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(git.readCalls) != 2 || len(git.readCalls[0]) != 500 || len(git.readCalls[1]) != 1 {
-		sizes := make([]int, len(git.readCalls))
-		for i, c := range git.readCalls {
-			sizes[i] = len(c)
+	sizes := make([]int, len(git.readCalls))
+	for i, c := range git.readCalls {
+		sizes[i] = len(c)
+	}
+	if want := []int{32, 32, 1}; !reflect.DeepEqual(sizes, want) {
+		t.Errorf("ReadBlobs call sizes = %v, want %v", sizes, want)
+	}
+	if got["files_read"] != 65 || got["events_written"] != 65 {
+		t.Errorf("files_read, events_written = %d, %d, want 65, 65", got["files_read"], got["events_written"])
+	}
+	if u := onlyApply(t, ts); len(u.Intervals) != 65 {
+		t.Errorf("Intervals = %d, want 65", len(u.Intervals))
+	}
+}
+
+// cannedExtractor handles paths ending in suffix and returns pm, or err when
+// set, for each.
+type cannedExtractor struct {
+	suffix string
+	pm     model.ParsedManifest
+	err    error
+}
+
+func (f *cannedExtractor) Patterns() []string { return []string{"**/" + f.suffix} }
+
+func (f *cannedExtractor) Parse(path string, content []byte) (model.ParsedManifest, error) {
+	if !strings.HasSuffix(path, f.suffix) {
+		return model.ParsedManifest{}, fmt.Errorf("parse %s: %w", path, model.ErrUnsupportedFile)
+	}
+	if f.err != nil {
+		return model.ParsedManifest{}, f.err
+	}
+	return f.pm, nil
+}
+
+func TestRun_ParseErrorLogRedacted(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "pyproject.toml")
+	git := &fakeGit{heads: map[string]string{"alpha": "c1"}, commits: map[string][]model.Commit{"alpha": {c1}}}
+	git.file(c1, "pyproject.toml", "")
+	ext := &cannedExtractor{suffix: "pyproject.toml", err: errors.New(`bad requirement "https://u:SECRET@h/x"`)}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha")}}, ts,
+		[]Extractor{ext}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, logger)
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	out := logs.String()
+	if strings.Contains(out, "SECRET") {
+		t.Errorf("logs = %q, want no SECRET", out)
+	}
+	if !strings.Contains(out, "timeline manifest parse failed") || !strings.Contains(out, "https://[REDACTED]@h/x") {
+		t.Errorf("logs = %q, want the parse failure with the URL redacted", out)
+	}
+	if dump := fmt.Sprintf("%#v", ts.applied); strings.Contains(dump, "SECRET") {
+		t.Errorf("ApplyTimeline updates contain SECRET: %s", dump)
+	}
+	checkStats(t, got, map[string]int64{"targets": 1, "commits_walked": 1, "parse_errors": 1})
+}
+
+func TestRun_DropsUnsafeDependencies(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "pyproject.toml")
+	git := &fakeGit{
+		heads:   map[string]string{"alpha": "c1"},
+		commits: map[string][]model.Commit{"alpha": {c1}},
+	}
+	git.file(c1, "pyproject.toml", "ignored by cannedExtractor")
+	dep := func(name, requirement string) model.Dependency {
+		return model.Dependency{
+			Package:     model.Package{PURL: "pkg:pypi/" + name, Ecosystem: "pypi", Name: name},
+			Requirement: requirement,
+			Direct:      model.DirectYes,
 		}
-		t.Errorf("ReadBlobs call sizes = %v, want [500 1]", sizes)
 	}
-	if got["files_read"] != 501 || got["events_written"] != 501 {
-		t.Errorf("files_read, events_written = %d, %d, want 501, 501", got["files_read"], got["events_written"])
+	ext := &cannedExtractor{suffix: "pyproject.toml", pm: model.ParsedManifest{
+		Ecosystem: "pypi",
+		Kind:      model.ManifestKindManifest,
+		Dependencies: []model.Dependency{
+			dep("pkg @ git+https://x-access-token:SECRET@github.com/o/r.git", ""),
+			dep("a\x1b[2Jb", ""),
+			dep("ok-name", "https://user:SECRET@host/x"),
+		},
+	}}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha")}}, ts,
+		[]Extractor{ext}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, logger)
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	if u := onlyApply(t, ts); len(u.Intervals) != 501 {
-		t.Errorf("Intervals = %d, want 501", len(u.Intervals))
+	u := onlyApply(t, ts)
+	kept := dep("ok-name", "https://[REDACTED]@host/x")
+	if want := []model.DepEvent{event(c1, "pyproject.toml", kept, model.ChangeAdded, "")}; !reflect.DeepEqual(u.Events, want) {
+		t.Errorf("Events = %+v, want %+v", u.Events, want)
 	}
+	if dump := fmt.Sprintf("%#v", u); strings.Contains(dump, "SECRET") {
+		t.Errorf("ApplyTimeline update contains SECRET: %s", dump)
+	}
+	if strings.Contains(logs.String(), "SECRET") || strings.Contains(logs.String(), "\x1b") {
+		t.Errorf("logs contain a dropped value: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "path=pyproject.toml") || !strings.Contains(logs.String(), "level=DEBUG") {
+		t.Errorf("logs = %q, want a debug line naming the manifest path", logs.String())
+	}
+	checkStats(t, got, map[string]int64{
+		"targets": 1, "commits_walked": 1, "files_read": 1, "deps_dropped": 2, "events_written": 1, "intervals": 1,
+	})
+}
+
+func TestRun_TooManyDependencies(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod")
+	c2 := commit("c2", 2, "go.mod")
+	a1 := fdep("pkg:golang/a", "golang", "v1.0.0")
+	repo := testRepo(1, "alpha")
+	repo.LastIndexedSHA = "c1"
+	git := &fakeGit{
+		heads:   map[string]string{"alpha": "c2"},
+		commits: map[string][]model.Commit{"alpha": {c2}},
+	}
+	var b strings.Builder
+	for i := range maxDepsPerFile + 1 {
+		fmt.Fprintf(&b, "pkg:golang/p%d@v1.0.0 ", i)
+	}
+	git.file(c2, "go.mod", b.String())
+	ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: {event(c1, "go.mod", a1, model.ChangeAdded, "")}}}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
+		[]Extractor{goExtractor()}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	u := onlyApply(t, ts)
+	if len(u.Events) != 0 || len(u.Manifests) != 0 {
+		t.Errorf("Events, Manifests = %d, %d, want none: the oversized file keeps the state", len(u.Events), len(u.Manifests))
+	}
+	if want := []model.DepInterval{interval("go.mod", a1, c1, nil)}; !reflect.DeepEqual(u.Intervals, want) {
+		t.Errorf("Intervals = %+v, want %+v", u.Intervals, want)
+	}
+	checkStats(t, got, map[string]int64{
+		"targets": 1, "commits_walked": 1, "parse_errors": 1, "intervals": 1,
+	})
+}
+
+func TestRun_AtDependencyLimitIsRead(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod")
+	var deps []model.Dependency
+	for i := range maxDepsPerFile {
+		deps = append(deps, fdep(fmt.Sprintf("pkg:golang/p%d", i), "golang", "v1.0.0"))
+	}
+	ext := &cannedExtractor{suffix: "go.mod", pm: model.ParsedManifest{Ecosystem: "golang", Kind: model.ManifestKindManifest, Dependencies: deps}}
+	git := &fakeGit{heads: map[string]string{"alpha": "c1"}, commits: map[string][]model.Commit{"alpha": {c1}}}
+	git.file(c1, "go.mod", "")
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha")}}, ts,
+		[]Extractor{ext}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got["parse_errors"] != 0 || got["events_written"] != maxDepsPerFile {
+		t.Errorf("parse_errors, events_written = %d, %d, want 0, %d", got["parse_errors"], got["events_written"], maxDepsPerFile)
+	}
+}
+
+func TestRun_EventCap(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod")
+	c2 := commit("c2", 2, "go.mod")
+	newGit := func() *fakeGit {
+		git := &fakeGit{
+			heads:   map[string]string{"alpha": "c2", "beta": "c2"},
+			commits: map[string][]model.Commit{"alpha": {c1, c2}, "beta": {c1, c2}},
+		}
+		git.file(c1, "go.mod", "pkg:golang/a@v1.0.0 pkg:golang/b@v1.0.0")
+		git.file(c2, "go.mod", "pkg:golang/a@v1.1.0 pkg:golang/b@v1.0.0")
+		return git
+	}
+	repos := &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha"), "beta": testRepo(2, "beta")}}
+
+	t.Run("over the limit fails the target before apply", func(t *testing.T) {
+		t.Parallel()
+		ts := &fakeTimelineStore{}
+		s := NewService(newGit(), repos, ts, []Extractor{goExtractor()}, nil,
+			Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+		s.maxEvents = 2 // the run produces 3 events
+
+		got, err := s.Run(t.Context(), model.Scope{})
+		want := "timeline: 1 of 1 targets failed: alpha: more than 2 new events in one run, the per-target limit"
+		if err == nil || err.Error() != want {
+			t.Fatalf("Run() error = %v, want %q", err, want)
+		}
+		if len(ts.applied) != 0 {
+			t.Errorf("ApplyTimeline called %d times, want 0", len(ts.applied))
+		}
+		checkStats(t, got, map[string]int64{"targets": 1, "failed": 1, "commits_walked": 2, "files_read": 2})
+	})
+
+	t.Run("at the limit applies", func(t *testing.T) {
+		t.Parallel()
+		ts := &fakeTimelineStore{}
+		s := NewService(newGit(), repos, ts, []Extractor{goExtractor()}, nil,
+			Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+		s.maxEvents = 3
+
+		if _, err := s.Run(t.Context(), model.Scope{}); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		if u := onlyApply(t, ts); len(u.Events) != 3 {
+			t.Errorf("Events = %d, want 3", len(u.Events))
+		}
+	})
+
+	t.Run("other targets continue", func(t *testing.T) {
+		t.Parallel()
+		git := newGit()
+		git.file(c1, "go.mod", "pkg:golang/a@v1.0.0")
+		git.file(c2, "go.mod", "pkg:golang/a@v1.0.0")
+		// alpha produces 1 event, beta 3 from its own commit.
+		b1 := commit("b1", 1, "go.mod")
+		git.commits["beta"] = []model.Commit{b1}
+		git.heads["beta"] = "b1"
+		git.file(b1, "go.mod", "pkg:golang/a@v1 pkg:golang/b@v1 pkg:golang/c@v1")
+		ts := &fakeTimelineStore{}
+		s := NewService(git, repos, ts, []Extractor{goExtractor()}, nil,
+			Options{Targets: []TargetSettings{{Slug: "beta"}, {Slug: "alpha"}}}, discard())
+		s.maxEvents = 2
+
+		_, err := s.Run(t.Context(), model.Scope{})
+		if err == nil || !strings.Contains(err.Error(), "1 of 2 targets failed: beta: more than 2 new events") {
+			t.Fatalf("Run() error = %v, want beta to fail on the limit", err)
+		}
+		if u := onlyApply(t, ts); u.RepoID != 1 || len(u.Events) != 1 {
+			t.Errorf("applied update = repo %d with %d events, want repo 1 with 1 event", u.RepoID, len(u.Events))
+		}
+	})
+
+	t.Run("default limit", func(t *testing.T) {
+		t.Parallel()
+		s := NewService(&fakeGit{}, &fakeRepoStore{}, &fakeTimelineStore{}, nil, nil, Options{}, discard())
+		if s.maxEvents != 500_000 {
+			t.Errorf("maxEvents = %d, want 500000", s.maxEvents)
+		}
+	})
 }

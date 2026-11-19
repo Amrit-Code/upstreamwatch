@@ -12,23 +12,30 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.osv.dev"
+	defaultBaseURL   = "https://api.osv.dev"
+	defaultBucketURL = "https://storage.googleapis.com/osv-vulnerabilities"
+	defaultBatchSize = 500
 	// checkPath fetches one small, long-published advisory.
 	checkPath = "/v1/vulns/GO-2020-0001"
 	// checkTimeout bounds the reachability probe.
 	checkTimeout = 10 * time.Second
 )
 
-// Options configures a Client.
+// Options configures a Client. Zero values take the defaults given per field.
 type Options struct {
-	BaseURL string // default https://api.osv.dev
+	BaseURL   string // default https://api.osv.dev
+	BucketURL string // default https://storage.googleapis.com/osv-vulnerabilities
+	BatchSize int    // default 500
 }
 
-// Client talks to the OSV API through the shared HTTP client.
+// Client talks to the OSV API and the OSV bucket through the shared HTTP
+// client. It sends no token.
 type Client struct {
-	hc     *httpx.Client
-	base   string
-	logger *slog.Logger
+	hc        *httpx.Client
+	base      string
+	bucket    string
+	batchSize int
+	logger    *slog.Logger
 }
 
 // New returns a Client. It does no I/O.
@@ -37,7 +44,21 @@ func New(hc *httpx.Client, opts Options, logger *slog.Logger) *Client {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &Client{hc: hc, base: strings.TrimSuffix(base, "/"), logger: logger}
+	bucket := opts.BucketURL
+	if bucket == "" {
+		bucket = defaultBucketURL
+	}
+	batch := opts.BatchSize
+	if batch <= 0 {
+		batch = defaultBatchSize
+	}
+	return &Client{
+		hc:        hc,
+		base:      strings.TrimSuffix(base, "/"),
+		bucket:    strings.TrimSuffix(bucket, "/"),
+		batchSize: batch,
+		logger:    logger,
+	}
 }
 
 // Check fetches one known advisory to prove the OSV API answers. It is

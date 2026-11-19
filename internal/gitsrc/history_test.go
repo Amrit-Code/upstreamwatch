@@ -3,7 +3,9 @@ package gitsrc_test
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -227,7 +229,10 @@ func TestIsAncestor_PrunedAfterForcePush(t *testing.T) {
 	up.Write("go.mod", "module example.com/app\n")
 	old := up.Commit("old history", day(1))
 	g, repo := syncFixture(t, up, testOptions(t))
+	oldFiles := objectFiles(t, repo.ClonePath)
 
+	// The rewritten history shares no object with the old one, so the
+	// later fetch brings every object it needs in files of its own.
 	up.Git("checkout", "--quiet", "--orphan", "rewrite")
 	up.Write("go.mod", "module example.com/rewritten\n")
 	newHead := up.Commit("unrelated history", day(2))
@@ -237,10 +242,32 @@ func TestIsAncestor_PrunedAfterForcePush(t *testing.T) {
 	if err != nil || res.Head != newHead {
 		t.Fatalf("Sync() after force-push = %+v, %v, want Head %s", res, err, newHead)
 	}
-	gitrepo.Git(t, repo.ClonePath, "repack", "-a", "-d", "--quiet")
-	gitrepo.Git(t, repo.ClonePath, "prune", "--expire=now")
-	if objects := gitrepo.Git(t, repo.ClonePath, "cat-file", "--batch-all-objects", "--batch-check"); strings.Contains(objects, old) {
-		t.Fatalf("old commit %s still in the clone after repack and prune:\n%s", old, objects)
+	// Collecting the old history with git repack and prune left the old
+	// commit in place on some git versions (seen on Linux CI), so the
+	// fixture deletes the object files the first sync wrote instead. What
+	// is under test is IsAncestor once the object is gone, not how git
+	// collects it.
+	for _, f := range oldFiles {
+		if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("remove old object file: %v", err)
+		}
+	}
+	// Optional indexes that automatic maintenance may have written can
+	// still name the old commit or the removed packs; git works without
+	// them.
+	for _, pattern := range []string{"objects/info/commit-graph*", "objects/pack/multi-pack-index*"} {
+		matches, err := filepath.Glob(filepath.Join(repo.ClonePath, pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range matches {
+			if err := os.RemoveAll(m); err != nil {
+				t.Fatalf("remove %s: %v", m, err)
+			}
+		}
+	}
+	if objects := gitrepo.Git(t, repo.ClonePath, "cat-file", "--batch-all-objects", "--batch-check"); strings.Contains(objects, old) || !strings.Contains(objects, newHead) {
+		t.Fatalf("clone objects after removing the old history = \n%s\nwant %s gone and %s present", objects, old, newHead)
 	}
 
 	got, err := g.IsAncestor(t.Context(), repo, old, newHead)
@@ -255,6 +282,32 @@ func TestIsAncestor_PrunedAfterForcePush(t *testing.T) {
 	if _, err := g.IsAncestor(t.Context(), missing, old, newHead); err == nil || !strings.Contains(err.Error(), "clone missing") {
 		t.Errorf("IsAncestor(missing clone) error = %v, want clone missing", err)
 	}
+}
+
+// objectFiles returns the pack and loose object files in the clone at dir.
+func objectFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var files []string
+	objects := filepath.Join(dir, "objects")
+	err := filepath.WalkDir(objects, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "info" {
+			return fs.SkipDir
+		}
+		if d.Type().IsRegular() {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("list object files: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no object files found; the fixture would assert nothing")
+	}
+	return files
 }
 
 func TestHeadAndIsAncestor(t *testing.T) {

@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -532,6 +534,87 @@ func fakeGitPath(t *testing.T) (pidFile, argsFile string) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return pidFile, argsFile
+}
+
+// TestSync_SizeCapKillsProcessGroup runs a first sync against a stand-in git
+// whose fetch starts two child processes, records every process ID, writes
+// past the size cap into the clone and waits. The size watch must stop the
+// fetch and take its children with it: a helper left running could keep
+// writing into a clone that is being removed.
+func TestSync_SizeCapKillsProcessGroup(t *testing.T) {
+	up := gitrepo.New(t, "main")
+	up.Commit("first", day(1))
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	bin := t.TempDir()
+	pidFile := filepath.Join(bin, "pids")
+	script := `#!/bin/sh
+for arg do
+	case "$arg" in
+	--git-dir=*) dir="${arg#--git-dir=}" ;;
+	fetch)
+		echo $$ >> 'PIDS'
+		sleep 60 & echo $! >> 'PIDS'
+		sleep 60 & echo $! >> 'PIDS'
+		head -c 1048576 /dev/zero > "$dir/objects/pack/tmp_pack_stub"
+		wait
+		exit 1 ;;
+	esac
+done
+exec 'REAL' "$@"
+`
+	script = strings.NewReplacer("PIDS", pidFile, "REAL", real).Replace(script)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	opts := testOptions(t)
+	opts.MaxCloneBytes = 256 << 10
+	_, err = gitsrc.New(opts, discard()).Sync(t.Context(), model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"})
+	if err == nil || !strings.Contains(err.Error(), "clone exceeded the 0.25 MiB size cap") {
+		t.Fatalf("Sync() error = %v, want the size cap error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(opts.ReposDir, "app.git")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("clone directory exists after the cap tripped (stat error %v)", statErr)
+	}
+
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read recorded pids: %v", err)
+	}
+	pids := strings.Fields(string(data))
+	if len(pids) != 3 {
+		t.Fatalf("recorded pids %q, want the stand-in fetch and its two children", pids)
+	}
+	for _, field := range pids {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("recorded pid %q: %v", field, err)
+		}
+		// A process left behind by a failure must not outlive the test.
+		t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) }) // best effort: it is normally gone
+		if processRunning(t, pid) {
+			t.Errorf("process %d from the cancelled fetch is still running", pid)
+		}
+	}
+}
+
+// processRunning reports whether pid is a live process, polling ps a bounded
+// number of times: a child killed with its group is reaped by init a moment
+// after the kill, and a zombie counts as not running.
+func processRunning(t *testing.T, pid int) bool {
+	t.Helper()
+	for range 200 {
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		state := strings.TrimSpace(string(out))
+		if (err != nil && state == "") || strings.HasPrefix(state, "Z") {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSync_FetchKeepsPacks(t *testing.T) {

@@ -518,6 +518,40 @@ func TestStop_ReturnsOnContextDone(t *testing.T) {
 	})
 }
 
+func TestStop_CancelledContextWhenIdle(t *testing.T) {
+	t.Parallel()
+	_, logger := newSink()
+	r := &fakeRunner{}
+	s := mustNew(t, r, []Entry{{Name: "digest", Cron: "0 8 * * *", Jobs: []string{"digest"}}}, logger)
+	s.Start(t.Context())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := s.Stop(ctx); err != nil {
+		t.Errorf("Stop(cancelled ctx) with no chain running = %v, want nil", err)
+	}
+}
+
+func TestTick_AfterStopStartsNoChain(t *testing.T) {
+	t.Parallel()
+	sink, logger := newSink()
+	r := &fakeRunner{}
+	s := mustNew(t, r, []Entry{{Name: "issues", Cron: "0 * * * *", Jobs: []string{"issues"}}}, logger)
+	s.Start(t.Context())
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	s.tick(t.Context(), s.entries[0]) // a tick cron fired just before it stopped
+
+	if got := r.gotCalls(); len(got) != 0 {
+		t.Errorf("Runner calls after Stop = %v, want none", got)
+	}
+	if got := len(sink.withMsg("schedule tick skipped, previous run still in progress")); got != 0 {
+		t.Errorf("got %d skip lines, want 0", got)
+	}
+}
+
 func TestStop_BeforeStartAndTwice(t *testing.T) {
 	t.Parallel()
 	entries := []Entry{{Name: "digest", Cron: "0 8 * * *", Jobs: []string{"digest"}}}

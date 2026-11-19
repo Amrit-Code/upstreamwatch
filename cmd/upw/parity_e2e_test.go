@@ -9,13 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/extract"
 	"github.com/Amrit-Code/upstreamwatch/internal/extract/unity"
@@ -23,6 +26,7 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/ingest"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/store"
+	"github.com/Amrit-Code/upstreamwatch/internal/testutil/gitrepo"
 	"github.com/Amrit-Code/upstreamwatch/internal/timeline"
 )
 
@@ -106,6 +110,12 @@ var parityExceptions = []parityException{
 	{Fixture: "cleo", Side: sideGitPkgs, SHA: "0919e78295521af49ce683faea884f451d22f67a", ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "pyyaml", Change: model.ChangeAdded, Requirement: "5.3.1", Reason: reasonFirstWins},
 	{Fixture: "cleo", Side: sideGitPkgs, SHA: "016e0d2568bb9f16a7d22505428982e80aa3214b", ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "setuptools", Change: model.ChangeChanged, Requirement: "68.1.2", Reason: reasonFirstWins},
 	{Fixture: "cleo", Side: sideGitPkgs, SHA: "0919e78295521af49ce683faea884f451d22f67a", ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "tox", Change: model.ChangeAdded, Requirement: "3.14.6", Reason: reasonFirstWins},
+	// cleo, merge 765562a8 (net change of 36993d5f): poetry.lock lists
+	// coverage (4.5.4, then 5.0.4) and importlib-metadata (0.23, then 1.5.2)
+	// twice; only the second entry moved (to 5.1 and 1.6.0), so the first,
+	// which upstreamwatch keeps, is unchanged at the merge.
+	{Fixture: "cleo", Side: sideGitPkgs, SHA: "765562a8421e5a9016ddff7e75fb88f5ec7fee28", ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "coverage", Change: model.ChangeChanged, Requirement: "5.1", Reason: reasonFirstWins},
+	{Fixture: "cleo", Side: sideGitPkgs, SHA: "765562a8421e5a9016ddff7e75fb88f5ec7fee28", ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "importlib-metadata", Change: model.ChangeChanged, Requirement: "1.6.0", Reason: reasonFirstWins},
 
 	// cleo: two commits whose poetry.lock diff changes only groups and
 	// markers lines (PEP 621 move, dependency-groups migration); git-pkgs
@@ -176,15 +186,27 @@ const maxListedDiffs = 50
 // fixture, so a run in which both sides parse nothing cannot pass.
 const minParityEvents = 100
 
+// minMergeEvents is the fewest merge-dated events each side must have per
+// fixture, so a run in which the merge check compares nothing cannot pass.
+// Both fixtures have a first-parent merge that brought in a dependency change.
+const minMergeEvents = 1
+
+// minHeadDeps is the fewest dependencies the state at HEAD must hold per
+// fixture, so a HEAD check in which both sides are empty cannot pass.
+const minHeadDeps = 10
+
 // gitPkgsEvent is one object of git pkgs history --format json, keeping only
-// the fields the comparison reads.
+// the fields the comparison reads. For a removal git-pkgs puts the
+// requirement the package had in Requirement and leaves PreviousRequirement
+// empty.
 type gitPkgsEvent struct {
-	SHA          string `json:"sha"`
-	Name         string `json:"name"`
-	Ecosystem    string `json:"ecosystem"`
-	ChangeType   string `json:"change_type"`
-	Requirement  string `json:"requirement"`
-	ManifestPath string `json:"manifest_path"`
+	SHA                 string `json:"sha"`
+	Name                string `json:"name"`
+	Ecosystem           string `json:"ecosystem"`
+	ChangeType          string `json:"change_type"`
+	Requirement         string `json:"requirement"`
+	PreviousRequirement string `json:"previous_requirement"`
+	ManifestPath        string `json:"manifest_path"`
 }
 
 // parityEvent is the normalised form both sides are compared in.
@@ -309,17 +331,117 @@ func collapseRespellings(events []gitPkgsEvent) []gitPkgsEvent {
 // it handles, normalises PyPI names and collapses respellings, and maps
 // modified to changed.
 func normaliseGitPkgs(events []gitPkgsEvent, firstParent, merges map[string]bool, handled func(path string) bool) ([]parityEvent, error) {
+	return toParityEvents(collapseRespellings(keepIndexed(events, handled, func(sha string) bool {
+		return firstParent[sha] && !merges[sha]
+	})))
+}
+
+// keepIndexed returns the events whose commit keepSHA accepts, in an
+// ecosystem upstreamwatch indexes and a manifest path it handles, with PyPI
+// names normalised, in their order.
+func keepIndexed(events []gitPkgsEvent, handled func(path string) bool, keepSHA func(sha string) bool) []gitPkgsEvent {
 	var kept []gitPkgsEvent
 	for _, e := range events {
-		if !firstParent[e.SHA] || merges[e.SHA] ||
-			!slices.Contains(parityEcosystems, e.Ecosystem) || !handled(e.ManifestPath) {
+		if !keepSHA(e.SHA) || !slices.Contains(parityEcosystems, e.Ecosystem) || !handled(e.ManifestPath) {
 			continue
 		}
 		e.Name = packageName(e.Ecosystem, e.Name)
 		kept = append(kept, e)
 	}
+	return kept
+}
+
+// normaliseMerge returns the net change the commits a first-parent merge
+// brought in made, dated at the merge, for comparison with upstreamwatch's
+// events at the merge. brought lists those commits (reachable from the
+// merge's second parent and not from its first) in topological order,
+// oldest first. The events of those commits are filtered and named as
+// normaliseGitPkgs does, respellings are collapsed per commit, and the rest
+// are netted per manifest and package by collapseMerge.
+func normaliseMerge(events []gitPkgsEvent, merge string, brought []string, handled func(path string) bool) ([]parityEvent, error) {
+	pos := make(map[string]int, len(brought))
+	for i, sha := range brought {
+		pos[sha] = i
+	}
+	kept := keepIndexed(events, handled, func(sha string) bool {
+		_, ok := pos[sha]
+		return ok
+	})
+	// git-pkgs prints commits in its own order; the net change needs them in
+	// commit order. A stable sort keeps each commit's events in file order.
+	slices.SortStableFunc(kept, func(a, b gitPkgsEvent) int { return cmp.Compare(pos[a.SHA], pos[b.SHA]) })
+	collapsed, err := collapseMerge(merge, collapseRespellings(kept))
+	if err != nil {
+		return nil, err
+	}
+	return toParityEvents(collapsed)
+}
+
+// collapseMerge nets events, in commit order and with normalised names, into
+// at most one event per manifest path, ecosystem and name, carrying SHA
+// merge. The package's state before the events is inferred from its first
+// event: absent before an added, present with the previous requirement
+// before a modified or removed. Its state after is that of its last event.
+// Absent to present is added at the last requirement; present to absent is
+// removed; present to present is modified from the first previous to the
+// last requirement, or nothing when the two are equal; absent to absent (added
+// then removed) is nothing. The result is ordered by first appearance. An
+// unknown change type is an error.
+func collapseMerge(merge string, events []gitPkgsEvent) ([]gitPkgsEvent, error) {
+	type key struct{ path, ecosystem, name string }
+	type net struct {
+		first, last gitPkgsEvent
+	}
+	var order []key
+	nets := map[key]*net{}
+	for _, e := range events {
+		if !slices.Contains([]string{"added", "modified", "removed"}, e.ChangeType) {
+			return nil, fmt.Errorf("git-pkgs event %s %s %s: unknown change_type %q", e.SHA, e.ManifestPath, e.Name, e.ChangeType)
+		}
+		k := key{e.ManifestPath, e.Ecosystem, e.Name}
+		if n, ok := nets[k]; ok {
+			n.last = e
+			continue
+		}
+		nets[k] = &net{first: e, last: e}
+		order = append(order, k)
+	}
+
+	var out []gitPkgsEvent
+	for _, k := range order {
+		n := nets[k]
+		before := n.first.ChangeType != "added"
+		// A removal carries the old requirement in Requirement.
+		beforeReq := cmp.Or(n.first.PreviousRequirement, n.first.Requirement)
+		if n.first.ChangeType == "modified" {
+			beforeReq = n.first.PreviousRequirement
+		}
+		after := n.last.ChangeType != "removed"
+		afterReq := n.last.Requirement
+
+		e := gitPkgsEvent{SHA: merge, ManifestPath: k.path, Ecosystem: k.ecosystem, Name: k.name}
+		switch {
+		case !before && !after:
+			continue
+		case !before:
+			e.ChangeType, e.Requirement = "added", afterReq
+		case !after:
+			e.ChangeType, e.Requirement = "removed", beforeReq
+		case beforeReq == afterReq:
+			continue
+		default:
+			e.ChangeType, e.PreviousRequirement, e.Requirement = "modified", beforeReq, afterReq
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// toParityEvents maps git-pkgs events to the compared form: modified becomes
+// changed, and a removal's requirement is dropped.
+func toParityEvents(events []gitPkgsEvent) ([]parityEvent, error) {
 	var out []parityEvent
-	for _, e := range collapseRespellings(kept) {
+	for _, e := range events {
 		var change model.Change
 		switch e.ChangeType {
 		case "added":
@@ -347,13 +469,13 @@ func normaliseGitPkgs(events []gitPkgsEvent, firstParent, merges map[string]bool
 	return out, nil
 }
 
-// normaliseUpw drops upstreamwatch's events on merge commits, whose changes
-// git-pkgs attributes to the branch commits, and the toolchain
-// pseudo-package, and normalises PyPI names.
-func normaliseUpw(events []model.DepEvent, merges map[string]bool) []parityEvent {
+// normaliseUpw drops upstreamwatch's events for the toolchain
+// pseudo-package and normalises PyPI names. Events at merges are kept: they
+// are compared with the net change normaliseMerge computes.
+func normaliseUpw(events []model.DepEvent) []parityEvent {
 	var out []parityEvent
 	for _, e := range events {
-		if merges[e.CommitSHA] || e.Package.PURL == toolchainPURL {
+		if e.Package.PURL == toolchainPURL {
 			continue
 		}
 		req := e.Requirement
@@ -505,26 +627,205 @@ func TestParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ours := normaliseUpw(indexWithUpw(t, logger, ext, fx.slug, clone), merges)
+			// Each merge on the first-parent chain is compared as the net
+			// change of the commits it brought in.
+			var theirsAtMerges int
+			for m := range merges {
+				brought := revList(t, env, clone, "--topo-order", "--reverse", m+"^2", "^"+m+"^1")
+				net, err := normaliseMerge(raw, m, brought, handled)
+				if err != nil {
+					t.Fatal(err)
+				}
+				theirsAtMerges += len(net)
+				theirs = append(theirs, net...)
+			}
+			events, intervals := indexWithUpw(t, logger, ext, fx.slug, clone)
+			ours := normaliseUpw(events)
+			oursAtMerges := 0
+			for _, e := range ours {
+				if merges[e.SHA] {
+					oursAtMerges++
+				}
+			}
 
 			r := compareParity(fx.slug, ours, theirs, parityExceptions)
-			t.Logf("%s: %d first-parent commits, %d merges; git-pkgs %d raw events; upw %d, git-pkgs %d normalised; %d excused",
-				fx.slug, len(firstParent), len(merges), len(raw), r.upwCount, r.gitPkgsCount, r.excused)
+			t.Logf("%s: %d first-parent commits, %d merges; git-pkgs %d raw events; upw %d, git-pkgs %d normalised; %d excused; at merges: upw %d, git-pkgs %d net, %d differing",
+				fx.slug, len(firstParent), len(merges), len(raw), r.upwCount, r.gitPkgsCount, r.excused,
+				oursAtMerges, theirsAtMerges, r.differingAt(merges))
 			if r.upwCount < minParityEvents || r.gitPkgsCount < minParityEvents {
 				t.Errorf("too few events to compare: upw %d, git-pkgs %d normalised, want at least %d on each side",
 					r.upwCount, r.gitPkgsCount, minParityEvents)
 			}
+			if oursAtMerges < minMergeEvents || theirsAtMerges < minMergeEvents {
+				t.Errorf("too few merge-dated events to compare: upw %d, git-pkgs %d net, want at least %d on each side",
+					oursAtMerges, theirsAtMerges, minMergeEvents)
+			}
 			if !r.ok() {
 				t.Errorf("timeline differs from git pkgs history\n%s", r.report(fx.slug))
+			}
+
+			// The state at HEAD, parsed straight from the tree, must equal
+			// the open intervals: independent of the walk, so a stale state
+			// fails here even when every event matches.
+			upwHead, err := headStateFromIntervals(intervals)
+			if err != nil {
+				t.Errorf("open intervals at HEAD: %v", err)
+			}
+			treeHead := headStateFromTree(t, env, clone, fx.commit, ext)
+			t.Logf("%s: state at HEAD: upw %d open intervals, tree %d dependencies", fx.slug, len(upwHead), len(treeHead))
+			if len(upwHead) < minHeadDeps || len(treeHead) < minHeadDeps {
+				t.Errorf("too few dependencies at HEAD to compare: upw %d, tree %d, want at least %d on each side",
+					len(upwHead), len(treeHead), minHeadDeps)
+			}
+			if diffs := compareHeadState(upwHead, treeHead); len(diffs) > 0 {
+				t.Errorf("open intervals differ from the manifests at HEAD %s (%d differences):\n%s",
+					fx.commit, len(diffs), listCapped(diffs))
 			}
 		})
 	}
 }
 
+// differingAt counts the differing events no exception excused whose commit
+// is in shas.
+func (r parityResult) differingAt(shas map[string]bool) int {
+	n := 0
+	for _, e := range slices.Concat(r.onlyUpw, r.onlyGitPkgs) {
+		if shas[e.SHA] {
+			n++
+		}
+	}
+	return n
+}
+
+// headKey identifies one dependency in the state at HEAD.
+type headKey struct {
+	ManifestPath string
+	PURL         string
+}
+
+// headDep is what the state at HEAD compares for one dependency.
+type headDep struct {
+	Version     string
+	Requirement string
+}
+
+// headStateFromIntervals returns the open intervals as the state at HEAD. Two
+// open intervals for one manifest and package are an error.
+func headStateFromIntervals(intervals []model.DepInterval) (map[headKey]headDep, error) {
+	st := map[headKey]headDep{}
+	var errs []error
+	for _, iv := range intervals {
+		if !iv.IsOpen() {
+			continue
+		}
+		k := headKey{iv.ManifestPath, iv.Package.PURL}
+		if _, ok := st[k]; ok {
+			errs = append(errs, fmt.Errorf("%s %s: more than one open interval", k.ManifestPath, k.PURL))
+			continue
+		}
+		st[k] = headDep{Version: iv.Version, Requirement: iv.Requirement}
+	}
+	return st, errors.Join(errs...)
+}
+
+// paritySkippedDirs are the directory names whose manifests the timeline
+// never indexes, at any depth (docs/decisions.md, "Lead decisions for M1").
+// The fixtures configure no exclude_paths.
+var paritySkippedDirs = []string{"testdata", "vendor", "node_modules"}
+
+// parityExcluded reports whether one of the slash-separated path's directory
+// segments, not its file name, is in paritySkippedDirs.
+func parityExcluded(path string) bool {
+	segments := strings.Split(path, "/")
+	for _, dir := range segments[:len(segments)-1] {
+		if slices.Contains(paritySkippedDirs, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// headStateFromTree parses every file at commit in the clone at dir that the
+// extractor handles and the timeline does not exclude, read with git show,
+// and returns the dependencies keyed by manifest path and package URL,
+// keeping the first occurrence of a package URL in each file. A file that
+// fails to parse contributes nothing and is logged.
+func headStateFromTree(t *testing.T, env []string, dir, commit string, ext *extract.Extractor) map[headKey]headDep {
+	t.Helper()
+	st := map[headKey]headDep{}
+	out := runTool(t, env, dir, "git", "ls-tree", "-r", "-z", "--full-tree", commit)
+	for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		// "<mode> <type> <object>\t<path>"
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok {
+			t.Fatalf("git ls-tree: unexpected entry %q", entry)
+		}
+		if fields := strings.Fields(meta); len(fields) != 3 || fields[1] != "blob" {
+			continue
+		}
+		if parityExcluded(path) {
+			continue
+		}
+		if _, err := ext.Parse(path, nil); errors.Is(err, model.ErrUnsupportedFile) {
+			continue
+		}
+		content := runTool(t, env, dir, "git", "show", "--no-textconv", commit+":"+path)
+		pm, err := ext.Parse(path, content)
+		if err != nil {
+			t.Logf("%s at %s does not parse, contributes nothing: %v", path, commit, err)
+			continue
+		}
+		for _, d := range pm.Dependencies {
+			k := headKey{path, d.Package.PURL}
+			if _, ok := st[k]; ok {
+				continue
+			}
+			st[k] = headDep{Version: d.Version, Requirement: d.Requirement}
+		}
+	}
+	return st
+}
+
+// compareHeadState returns one sorted line per dependency that differs
+// between upw's state at HEAD and the state parsed from the tree.
+func compareHeadState(upw, tree map[headKey]headDep) []string {
+	var diffs []string
+	for k, u := range upw {
+		tr, ok := tree[k]
+		switch {
+		case !ok:
+			diffs = append(diffs, fmt.Sprintf("%s %s: only in upw (version %q, requirement %q)", k.ManifestPath, k.PURL, u.Version, u.Requirement))
+		case u != tr:
+			diffs = append(diffs, fmt.Sprintf("%s %s: upw version %q requirement %q, tree version %q requirement %q",
+				k.ManifestPath, k.PURL, u.Version, u.Requirement, tr.Version, tr.Requirement))
+		}
+	}
+	for k, tr := range tree {
+		if _, ok := upw[k]; !ok {
+			diffs = append(diffs, fmt.Sprintf("%s %s: only in tree (version %q, requirement %q)", k.ManifestPath, k.PURL, tr.Version, tr.Requirement))
+		}
+	}
+	slices.Sort(diffs)
+	return diffs
+}
+
+// listCapped indents lines, one per line, listing at most maxListedDiffs.
+func listCapped(lines []string) string {
+	var b strings.Builder
+	for i, l := range lines {
+		if i == maxListedDiffs {
+			fmt.Fprintf(&b, "  ... %d more\n", len(lines)-maxListedDiffs)
+			break
+		}
+		fmt.Fprintf(&b, "  %s\n", l)
+	}
+	return b.String()
+}
+
 // indexWithUpw syncs the clone at dir through its file:// URL with the
 // ingest job, builds its timeline with the timeline job and returns the
-// stored events.
-func indexWithUpw(t *testing.T, logger *slog.Logger, ext *extract.Extractor, slug, dir string) []model.DepEvent {
+// stored events and intervals.
+func indexWithUpw(t *testing.T, logger *slog.Logger, ext *extract.Extractor, slug, dir string) ([]model.DepEvent, []model.DepInterval) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -567,7 +868,11 @@ func indexWithUpw(t *testing.T, logger *slog.Logger, ext *extract.Extractor, slu
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	return events
+	intervals, err := db.ListIntervals(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list intervals: %v", err)
+	}
+	return events, intervals
 }
 
 // parityEnv is the environment git and git-pkgs run with: the caller's,
@@ -606,14 +911,25 @@ func runTool(t *testing.T, env []string, dir, name string, args ...string) []byt
 // dir, as a set.
 func revSet(t *testing.T, env []string, dir string, args ...string) map[string]bool {
 	t.Helper()
-	out := runTool(t, env, dir, "git", append([]string{"rev-list"}, args...)...)
 	set := map[string]bool{}
-	for line := range strings.Lines(string(out)) {
-		if sha := strings.TrimSpace(line); sha != "" {
-			set[sha] = true
-		}
+	for _, sha := range revList(t, env, dir, args...) {
+		set[sha] = true
 	}
 	return set
+}
+
+// revList returns the commits git rev-list prints for args in the clone at
+// dir, in its order.
+func revList(t *testing.T, env []string, dir string, args ...string) []string {
+	t.Helper()
+	out := runTool(t, env, dir, "git", append([]string{"rev-list"}, args...)...)
+	var shas []string
+	for line := range strings.Lines(string(out)) {
+		if sha := strings.TrimSpace(line); sha != "" {
+			shas = append(shas, sha)
+		}
+	}
+	return shas
 }
 
 func TestParityCompare(t *testing.T) {
@@ -655,7 +971,7 @@ func TestParityCompare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normaliseGitPkgs: %v", err)
 	}
-	ours := normaliseUpw(upw, merges)
+	ours := normaliseUpw(upw)
 	wantNormalised := []parityEvent{
 		{SHA: fp1, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", Change: model.ChangeAdded, Requirement: "v1.0.0"},
 		{SHA: fp2, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", Change: model.ChangeChanged, Requirement: "v1.1.0"},
@@ -664,8 +980,13 @@ func TestParityCompare(t *testing.T) {
 	if !slices.Equal(theirs, wantNormalised) {
 		t.Errorf("normaliseGitPkgs = %v, want %v", theirs, wantNormalised)
 	}
-	if !slices.Equal(ours, wantNormalised) {
-		t.Errorf("normaliseUpw = %v, want %v", ours, wantNormalised)
+	// upstreamwatch's event at the merge is kept, for comparison with the
+	// net change of the commits the merge brought in; only the toolchain
+	// pseudo-package is dropped.
+	wantUpw := append(slices.Clone(wantNormalised),
+		parityEvent{SHA: merge, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/merged", Change: model.ChangeAdded, Requirement: "v1.0.0"})
+	if !slices.Equal(ours, wantUpw) {
+		t.Errorf("normaliseUpw = %v, want %v", ours, wantUpw)
 	}
 
 	if _, err := normaliseGitPkgs([]gitPkgsEvent{{SHA: fp1, ManifestPath: "go.mod", Ecosystem: "golang", ChangeType: "renamed"}},
@@ -840,7 +1161,378 @@ func TestParityNormalisePyPIRespellings(t *testing.T) {
 		{SHA: fp1, ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "babel", Change: model.ChangeChanged, Requirement: "2.11.0"},
 		{SHA: fp2, ManifestPath: "go.mod", Ecosystem: "golang", Name: "github.com/BurntSushi/toml", Change: model.ChangeAdded, Requirement: "v1.0.0"},
 	}
-	if gotUpw := normaliseUpw(upw, nil); !slices.Equal(gotUpw, wantUpw) {
+	if gotUpw := normaliseUpw(upw); !slices.Equal(gotUpw, wantUpw) {
 		t.Errorf("normaliseUpw =\n%v\nwant\n%v", gotUpw, wantUpw)
+	}
+}
+
+func TestParityCollapseMerge(t *testing.T) {
+	t.Parallel()
+
+	const (
+		merge = "9999999999999999999999999999999999999999"
+		b1    = "1111111111111111111111111111111111111111"
+		b2    = "2222222222222222222222222222222222222222"
+		b3    = "3333333333333333333333333333333333333333"
+	)
+	lib := func(sha, change, prev, req string) gitPkgsEvent {
+		return gitPkgsEvent{SHA: sha, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib",
+			ChangeType: change, PreviousRequirement: prev, Requirement: req}
+	}
+	atMerge := func(change, prev, req string) gitPkgsEvent { return lib(merge, change, prev, req) }
+
+	tests := []struct {
+		name   string
+		events []gitPkgsEvent
+		want   []gitPkgsEvent
+	}{
+		{
+			// The package was absent before the first event, so the net
+			// change is an addition, carrying the last version.
+			name:   "added then changed is one addition at the last version",
+			events: []gitPkgsEvent{lib(b1, "added", "", "v1.0.0"), lib(b2, "modified", "v1.0.0", "v1.1.0")},
+			want:   []gitPkgsEvent{atMerge("added", "", "v1.1.0")},
+		},
+		{
+			name:   "added then removed cancels",
+			events: []gitPkgsEvent{lib(b1, "added", "", "v1.0.0"), lib(b2, "removed", "", "v1.0.0")},
+			want:   nil,
+		},
+		{
+			name:   "two changes are one change from the first previous to the last version",
+			events: []gitPkgsEvent{lib(b1, "modified", "v1.0.0", "v1.1.0"), lib(b2, "modified", "v1.1.0", "v1.2.0")},
+			want:   []gitPkgsEvent{atMerge("modified", "v1.0.0", "v1.2.0")},
+		},
+		{
+			name:   "changes back to the first version cancel",
+			events: []gitPkgsEvent{lib(b1, "modified", "v1.0.0", "v1.1.0"), lib(b2, "modified", "v1.1.0", "v1.0.0")},
+			want:   nil,
+		},
+		{
+			name:   "changed then removed is a removal",
+			events: []gitPkgsEvent{lib(b1, "modified", "v1.0.0", "v1.1.0"), lib(b2, "removed", "", "v1.1.0")},
+			want:   []gitPkgsEvent{atMerge("removed", "", "v1.0.0")},
+		},
+		{
+			name:   "removed then added at another version is a change",
+			events: []gitPkgsEvent{lib(b1, "removed", "", "v1.0.0"), lib(b2, "added", "", "v2.0.0")},
+			want:   []gitPkgsEvent{atMerge("modified", "v1.0.0", "v2.0.0")},
+		},
+		{
+			name:   "removed then added at the same version cancels",
+			events: []gitPkgsEvent{lib(b1, "removed", "", "v1.0.0"), lib(b2, "added", "", "v1.0.0")},
+			want:   nil,
+		},
+		{
+			name:   "added, removed, added again is one addition at the last version",
+			events: []gitPkgsEvent{lib(b1, "added", "", "v1.0.0"), lib(b2, "removed", "", "v1.0.0"), lib(b3, "added", "", "v1.2.0")},
+			want:   []gitPkgsEvent{atMerge("added", "", "v1.2.0")},
+		},
+		{
+			name:   "a single event keeps its change, dated at the merge",
+			events: []gitPkgsEvent{lib(b1, "modified", "v1.0.0", "v1.1.0")},
+			want:   []gitPkgsEvent{atMerge("modified", "v1.0.0", "v1.1.0")},
+		},
+		{
+			name: "packages and manifests are netted apart, in order of first appearance",
+			events: []gitPkgsEvent{
+				{SHA: b1, ManifestPath: "requirements.txt", Ecosystem: "pypi", Name: "flask", ChangeType: "added", Requirement: "==2.0"},
+				{SHA: b1, ManifestPath: "pyproject.toml", Ecosystem: "pypi", Name: "flask", ChangeType: "added", Requirement: "^2.0"},
+				lib(b1, "added", "", "v1.0.0"),
+				{SHA: b2, ManifestPath: "requirements.txt", Ecosystem: "pypi", Name: "flask", ChangeType: "modified", PreviousRequirement: "==2.0", Requirement: "==2.1"},
+				{SHA: b2, ManifestPath: "pyproject.toml", Ecosystem: "pypi", Name: "flask", ChangeType: "removed", Requirement: "^2.0"},
+			},
+			want: []gitPkgsEvent{
+				{SHA: merge, ManifestPath: "requirements.txt", Ecosystem: "pypi", Name: "flask", ChangeType: "added", Requirement: "==2.1"},
+				atMerge("added", "", "v1.0.0"),
+			},
+		},
+		{
+			name:   "no events",
+			events: nil,
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := collapseMerge(merge, tt.events)
+			if err != nil {
+				t.Fatalf("collapseMerge(%v): %v", tt.events, err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("collapseMerge(%v) =\n%v\nwant\n%v", tt.events, got, tt.want)
+			}
+		})
+	}
+
+	if _, err := collapseMerge(merge, []gitPkgsEvent{lib(b1, "renamed", "", "")}); err == nil {
+		t.Errorf("collapseMerge(unknown change_type) error = nil, want an error")
+	}
+}
+
+func TestParityNormaliseMerge(t *testing.T) {
+	t.Parallel()
+
+	const (
+		merge = "9999999999999999999999999999999999999999"
+		b1    = "1111111111111111111111111111111111111111"
+		b2    = "2222222222222222222222222222222222222222"
+		other = "5555555555555555555555555555555555555555"
+	)
+	handled := func(path string) bool {
+		_, err := extract.New(extract.Options{}, slog.New(slog.DiscardHandler)).Parse(path, nil)
+		return !errors.Is(err, model.ErrUnsupportedFile)
+	}
+	// git-pkgs' own order puts b2 before b1; the net change follows commit
+	// order, so lib is added at its last version.
+	raw := []gitPkgsEvent{
+		{SHA: b2, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", ChangeType: "modified", PreviousRequirement: "v1.0.0", Requirement: "v1.1.0"},
+		{SHA: b2, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/gone", ChangeType: "removed", Requirement: "v0.1.0"},
+		{SHA: b1, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", ChangeType: "added", Requirement: "v1.0.0"},
+		// A respelling within one commit is one package left unchanged.
+		{SHA: b1, ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "Jinja2", ChangeType: "removed", Requirement: "3.1.2"},
+		{SHA: b1, ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "jinja2", ChangeType: "added", Requirement: "3.1.2"},
+		// PyPI names are normalised.
+		{SHA: b2, ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "Zope.Interface", ChangeType: "added", Requirement: "5.0"},
+		// Dropped: a commit the merge did not bring in, an ecosystem
+		// upstreamwatch does not index, a manifest path it does not handle.
+		{SHA: other, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/elsewhere", ChangeType: "added", Requirement: "v1.0.0"},
+		{SHA: b1, ManifestPath: "package.json", Ecosystem: "npm", Name: "left-pad", ChangeType: "added", Requirement: "^1.0.0"},
+		{SHA: b1, ManifestPath: "Pipfile", Ecosystem: "pypi", Name: "requests", ChangeType: "added", Requirement: "*"},
+	}
+	got, err := normaliseMerge(raw, merge, []string{b1, b2}, handled)
+	if err != nil {
+		t.Fatalf("normaliseMerge: %v", err)
+	}
+	want := []parityEvent{
+		{SHA: merge, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", Change: model.ChangeAdded, Requirement: "v1.1.0"},
+		{SHA: merge, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/gone", Change: model.ChangeRemoved},
+		{SHA: merge, ManifestPath: "poetry.lock", Ecosystem: "pypi", Name: "zope-interface", Change: model.ChangeAdded, Requirement: "5.0"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("normaliseMerge =\n%v\nwant\n%v", got, want)
+	}
+
+	if got, err := normaliseMerge(raw, merge, nil, handled); err != nil || got != nil {
+		t.Errorf("normaliseMerge(no commits brought in) = %v, %v, want nil, nil", got, err)
+	}
+	if _, err := normaliseMerge([]gitPkgsEvent{{SHA: b1, ManifestPath: "go.mod", Ecosystem: "golang", Name: "example.com/lib", ChangeType: "renamed"}},
+		merge, []string{b1}, handled); err == nil {
+		t.Errorf("normaliseMerge(unknown change_type) error = nil, want an error")
+	}
+}
+
+func TestParityHeadStateFromIntervals(t *testing.T) {
+	t.Parallel()
+
+	day := func(d int) time.Time { return time.Date(2026, 3, d, 12, 0, 0, 0, time.UTC) }
+	lib := model.Package{PURL: "pkg:golang/example.com/lib", Ecosystem: "golang", Name: "example.com/lib"}
+	other := model.Package{PURL: "pkg:golang/example.com/other", Ecosystem: "golang", Name: "example.com/other"}
+
+	intervals := []model.DepInterval{
+		// Closed intervals are not in force at HEAD.
+		{ManifestPath: "go.mod", Package: lib, Version: "v1.0.0", Requirement: "v1.0.0", FromSHA: "a", From: day(1), ToSHA: "b", To: day(2)},
+		{ManifestPath: "go.mod", Package: lib, Version: "v1.1.0", Requirement: "v1.1.0", FromSHA: "b", From: day(2)},
+		{ManifestPath: "tools/go.mod", Package: lib, Version: "v0.9.0", Requirement: "v0.9.0", FromSHA: "a", From: day(1)},
+		{ManifestPath: "go.mod", Package: other, Version: "v2.0.0", Requirement: "v2.0.0", FromSHA: "a", From: day(1), ToSHA: "c", To: day(3)},
+	}
+	got, err := headStateFromIntervals(intervals)
+	if err != nil {
+		t.Fatalf("headStateFromIntervals: %v", err)
+	}
+	want := map[headKey]headDep{
+		{"go.mod", lib.PURL}:       {Version: "v1.1.0", Requirement: "v1.1.0"},
+		{"tools/go.mod", lib.PURL}: {Version: "v0.9.0", Requirement: "v0.9.0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("headStateFromIntervals = %v, want %v", got, want)
+	}
+
+	twoOpen := append(slices.Clone(intervals),
+		model.DepInterval{ManifestPath: "go.mod", Package: lib, Version: "v1.2.0", Requirement: "v1.2.0", FromSHA: "c", From: day(3)})
+	if _, err := headStateFromIntervals(twoOpen); err == nil {
+		t.Errorf("headStateFromIntervals(two open intervals for one package) error = nil, want an error")
+	}
+
+	if got, err := headStateFromIntervals(nil); err != nil || len(got) != 0 {
+		t.Errorf("headStateFromIntervals(nil) = %v, %v, want empty, nil", got, err)
+	}
+}
+
+func TestParityCompareHeadState(t *testing.T) {
+	t.Parallel()
+
+	lib := headKey{ManifestPath: "go.mod", PURL: "pkg:golang/example.com/lib"}
+	img := headKey{ManifestPath: "Dockerfile", PURL: "pkg:docker/golang"}
+	base := map[headKey]headDep{
+		lib: {Version: "v1.1.0", Requirement: "v1.1.0"},
+		img: {Version: "1.27", Requirement: "1.27"},
+	}
+	with := func(key headKey, d headDep) map[headKey]headDep {
+		m := maps.Clone(base)
+		m[key] = d
+		return m
+	}
+	without := func(key headKey) map[headKey]headDep {
+		m := maps.Clone(base)
+		delete(m, key)
+		return m
+	}
+
+	tests := []struct {
+		name      string
+		upw, tree map[headKey]headDep
+		want      []string
+	}{
+		{name: "equal", upw: base, tree: maps.Clone(base), want: nil},
+		{name: "both empty", upw: nil, tree: map[headKey]headDep{}, want: nil},
+		{
+			// A stale interval: the walk missed the last change.
+			name: "version differs",
+			upw:  with(lib, headDep{Version: "v1.0.0", Requirement: "v1.0.0"}),
+			tree: base,
+			want: []string{`go.mod pkg:golang/example.com/lib: upw version "v1.0.0" requirement "v1.0.0", tree version "v1.1.0" requirement "v1.1.0"`},
+		},
+		{
+			name: "requirement differs",
+			upw:  with(img, headDep{Version: "1.27", Requirement: "1.27@sha256:00"}),
+			tree: base,
+			want: []string{`Dockerfile pkg:docker/golang: upw version "1.27" requirement "1.27@sha256:00", tree version "1.27" requirement "1.27"`},
+		},
+		{
+			name: "open interval for a dependency no longer in the tree",
+			upw:  base,
+			tree: without(lib),
+			want: []string{`go.mod pkg:golang/example.com/lib: only in upw (version "v1.1.0", requirement "v1.1.0")`},
+		},
+		{
+			name: "dependency in the tree with no open interval",
+			upw:  without(img),
+			tree: base,
+			want: []string{`Dockerfile pkg:docker/golang: only in tree (version "1.27", requirement "1.27")`},
+		},
+		{
+			name: "differences are sorted",
+			upw:  without(lib),
+			tree: without(img),
+			want: []string{
+				`Dockerfile pkg:docker/golang: only in upw (version "1.27", requirement "1.27")`,
+				`go.mod pkg:golang/example.com/lib: only in tree (version "v1.1.0", requirement "v1.1.0")`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := compareHeadState(tt.upw, tt.tree); !slices.Equal(got, tt.want) {
+				t.Errorf("compareHeadState =\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParityExcluded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"go.mod", false},
+		{"tools/go.mod", false},
+		{"testdata/go.mod", true},
+		{"internal/x/testdata/requirements.txt", true},
+		{"vendor/example.com/lib/go.mod", true},
+		{"web/node_modules/pkg/Dockerfile", true},
+		// Only directory segments count, and only whole segments.
+		{"vendor", false},
+		{"testdata2/go.mod", false},
+		{"myvendor/go.mod", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			if got := parityExcluded(tt.path); got != tt.want {
+				t.Errorf("parityExcluded(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParityHeadStateFromTree(t *testing.T) {
+	t.Parallel()
+
+	day := func(d int) time.Time { return time.Date(2026, 3, d, 12, 0, 0, 0, time.UTC) }
+	ext := extract.New(extract.Options{}, slog.New(slog.DiscardHandler))
+
+	const (
+		goMod1 = "module example.com/app\n\ngo 1.27\n\nrequire example.com/lib v1.2.0\n"
+		goMod2 = "module example.com/app\n\ngo 1.27\n\nrequire example.com/lib v1.3.0\n"
+		reqs   = "requests==2.31.0\nflask==3.0.0\n"
+		broken = "module example.com/broken\n\nrequire (\n"
+	)
+	if _, err := ext.Parse("broken/go.mod", []byte(broken)); err == nil {
+		t.Fatalf("precondition: Parse(broken go.mod) error = nil, want a parse error")
+	}
+
+	r := gitrepo.New(t, "main")
+	r.Write("go.mod", goMod1)
+	r.Write("app/requirements.txt", reqs)
+	r.Write("broken/go.mod", broken)
+	r.Write("README.md", "not a manifest\n")
+	// Excluded by the timeline's rules.
+	r.Write("vendor/example.com/x/go.mod", "module example.com/x\n\nrequire example.com/y v0.1.0\n")
+	r.Write("internal/testdata/requirements.txt", "django==1.0\n")
+	r.Write("web/node_modules/pkg/Dockerfile", "FROM alpine:3.19\n")
+	first := r.Commit("first", day(1))
+	// A later commit, and an uncommitted change, are not part of first.
+	r.Write("go.mod", goMod2)
+	r.Commit("bump lib", day(2))
+	r.Write("app/requirements.txt", "requests==9.9.9\n")
+
+	want := map[headKey]headDep{}
+	for path, content := range map[string]string{"go.mod": goMod1, "app/requirements.txt": reqs} {
+		pm, err := ext.Parse(path, []byte(content))
+		if err != nil {
+			t.Fatalf("Parse(%s): %v", path, err)
+		}
+		for _, d := range pm.Dependencies {
+			want[headKey{path, d.Package.PURL}] = headDep{Version: d.Version, Requirement: d.Requirement}
+		}
+	}
+	if len(want) < 3 {
+		t.Fatalf("precondition: %d dependencies parsed from the fixture, want at least 3", len(want))
+	}
+
+	got := headStateFromTree(t, parityEnv(t), r.Path(), first, ext)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("headStateFromTree(first) =\n%v\nwant\n%v", got, want)
+	}
+}
+
+func TestParityMergeBroughtIn(t *testing.T) {
+	t.Parallel()
+
+	day := func(d int) time.Time { return time.Date(2026, 3, d, 12, 0, 0, 0, time.UTC) }
+	r := gitrepo.New(t, "main")
+	r.Write("go.mod", "module example.com/app\n")
+	r.Commit("root", day(1))
+	r.Branch("feature")
+	r.Write("a.txt", "a\n")
+	f1 := r.Commit("feature 1", day(2))
+	r.Write("b.txt", "b\n")
+	f2 := r.Commit("feature 2", day(3))
+	r.Switch("main")
+	r.Write("c.txt", "c\n")
+	r.Commit("main moves on", day(4))
+	m := r.Merge("feature", "merge feature", day(5))
+
+	env := parityEnv(t)
+	got := revList(t, env, r.Path(), "--topo-order", "--reverse", m+"^2", "^"+m+"^1")
+	if want := []string{f1, f2}; !slices.Equal(got, want) {
+		t.Errorf("commits brought in by the merge = %v, want %v (oldest first)", got, want)
+	}
+	if merges := revSet(t, env, r.Path(), "--first-parent", "--merges", "HEAD"); !reflect.DeepEqual(merges, map[string]bool{m: true}) {
+		t.Errorf("first-parent merges = %v, want only %s", merges, m)
 	}
 }

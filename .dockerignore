@@ -1,0 +1,19 @@
+# Keep private and local-only files out of the image build context.
+.git
+.claude
+docs
+mvp-plan
+data
+data-dev
+bin
+upw.yaml
+.env
+*.local.md
+
+# The same files at any depth, and the data directory that compose's build:
+# alternative creates next to deploy/compose.yml (it holds clones of the
+# target repositories).
+**/upw.yaml
+**/.env
+**/*.local.md
+deploy/data

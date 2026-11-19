@@ -6,10 +6,10 @@ GO_ARCH_LINT := github.com/fe3dback/go-arch-lint@v1.19.2
 .PHONY: check build fmt e2e
 
 # check is the acceptance command for every change. Each step stops the target
-# on failure.
+# on failure. gofmt skips .claude/, where agent worktrees live.
 check:
 	@echo "==> gofmt"
-	@out=$$(gofmt -l .) || exit 1; \
+	@out=$$(find . -path ./.claude -prune -o -name '*.go' -print | xargs gofmt -l) || exit 1; \
 	if [ -n "$$out" ]; then \
 		echo "gofmt: these files need formatting (run make fmt):"; \
 		echo "$$out"; \

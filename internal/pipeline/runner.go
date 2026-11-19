@@ -123,9 +123,13 @@ func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.
 
 	run.FinishedAt = finished
 	run.Stats = stats
+	// The job error can carry a credential (a URL with userinfo, a token
+	// echoed by an outside tool), so only its redacted text leaves the Runner.
+	var errText string
 	if jobErr != nil {
+		errText = redact(jobErr.Error())
 		run.Status = model.RunFailed
-		run.Error = jobErr.Error()
+		run.Error = errText
 	} else {
 		run.Status = model.RunSucceeded
 		run.Error = ""
@@ -138,7 +142,7 @@ func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.
 
 	var errs []error
 	if jobErr != nil {
-		errs = append(errs, fmt.Errorf("run job %s: %w", job, jobErr))
+		errs = append(errs, fmt.Errorf("run job %s: %w", job, &redactedError{msg: errText, err: jobErr}))
 	}
 	if err := r.runs.FinishRun(recordCtx, run); err != nil {
 		errs = append(errs, fmt.Errorf("finish run %d of job %s: %w", run.ID, job, err))
@@ -149,13 +153,13 @@ func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.
 			Kind:          model.KindJobFailure,
 			Fingerprint:   JobFailureFingerprint(job),
 			Score:         jobFailureScore,
-			RankReason:    "job " + job + " failed: " + truncateUTF8(jobErr.Error(), maxReasonErrorBytes),
+			RankReason:    "job " + job + " failed: " + truncateUTF8(errText, maxReasonErrorBytes),
 			LastChangedAt: finished,
 		}
 		if _, err := r.findings.UpsertFinding(recordCtx, f); err != nil {
 			errs = append(errs, fmt.Errorf("raise job_failure finding for job %s: %w", job, err))
 		}
-		r.logger.Error("job failed", "job", job, "run_id", run.ID, "error", jobErr.Error())
+		r.logger.Error("job failed", "job", job, "run_id", run.ID, "error", errText)
 	} else {
 		if err := r.findings.ResolveFinding(recordCtx, JobFailureFingerprint(job), finished); err != nil {
 			errs = append(errs, fmt.Errorf("resolve job_failure finding for job %s: %w", job, err))

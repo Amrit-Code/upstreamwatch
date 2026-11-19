@@ -39,7 +39,7 @@ A work order is the smallest unit that carries its own tests and is worth review
 
 Dispatch several work orders at once only when their owned files are disjoint, none consumes something another in the same wave produces, and every interface file they share is already committed. Shared chokepoints (`cmd/upw/main.go`, the router in `internal/web`, migration numbers, `go.mod`) belong to one work order per wave or to the lead; the lead assigns each migration its exact filename in the work order so two tasks never pick the same number.
 
-Run each parallel agent with `isolation: "worktree"` so one agent's half-written package cannot break another's `make check`. Commit the work-order files to `main` first, because a worktree only sees committed files. The agent's result names its worktree; review-gate runs there, and the lead merges accepted worktrees into `main` one at a time, rerunning `make check` on `main` after each merge. A single sequential work order may run in the main working tree.
+Run each parallel agent with `isolation: "worktree"` so one agent's half-written package cannot break another's `make check`. Commit the work-order files to `main` and push them first: a worktree only sees committed files, and agent worktrees are created from `origin/main`, not the local branch (M1 wave 1 started one commit behind because the groundwork was committed but not pushed). The agent's result names its worktree; review-gate runs there, and the lead merges accepted worktrees into `main` one at a time, rerunning `make check` on `main` after each merge. A single sequential work order may run in the main working tree.
 
 ## Routing
 

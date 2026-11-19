@@ -10,23 +10,24 @@ import (
 )
 
 const repoColumns = `id, slug, url, default_branch, clone_path, last_indexed_sha,
-	last_fetch_ts, last_fetch_error`
+	timeline_settings, last_fetch_ts, last_fetch_error`
 
 // scanRepo reads one repos row selected with repoColumns.
 func scanRepo(s scanner) (model.TargetRepo, error) {
 	var (
-		r                               model.TargetRepo
-		url, branch, clonePath, indexed sql.NullString
-		lastFetch, lastFetchErr         sql.NullString
+		r                                 model.TargetRepo
+		url, branch, clonePath, indexed   sql.NullString
+		settings, lastFetch, lastFetchErr sql.NullString
 	)
 	if err := s.Scan(&r.ID, &r.Slug, &url, &branch, &clonePath, &indexed,
-		&lastFetch, &lastFetchErr); err != nil {
+		&settings, &lastFetch, &lastFetchErr); err != nil {
 		return model.TargetRepo{}, err
 	}
 	r.URL = url.String
 	r.DefaultBranch = branch.String
 	r.ClonePath = clonePath.String
 	r.LastIndexedSHA = indexed.String
+	r.TimelineSettings = settings.String
 	r.LastFetchError = lastFetchErr.String
 	var err error
 	if r.LastFetchAt, err = parseTime(lastFetch); err != nil {

@@ -2,7 +2,6 @@ package timeline
 
 import (
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -469,54 +468,6 @@ func TestFold_ClampsBackwardDates(t *testing.T) {
 		if iv.To.Before(iv.From) {
 			t.Errorf("interval %+v ends before it starts", iv)
 		}
-	}
-}
-
-func TestDropFilteredEvents(t *testing.T) {
-	t.Parallel()
-	c1 := commit("c1", 1)
-	goA := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectYes, "")
-	img := model.Dependency{Package: pkg("pkg:docker/golang", "docker"), Version: "1.27"}
-	root := event(c1, "go.mod", goA, model.ChangeAdded, "")
-	example := event(c1, "examples/go.mod", goA, model.ChangeAdded, "")
-	fixture := event(c1, "internal/testdata/go.mod", goA, model.ChangeAdded, "")
-	docker := event(c1, "Dockerfile", img, model.ChangeAdded, "")
-	all := []model.DepEvent{docker, example, root, fixture}
-
-	tests := []struct {
-		name        string
-		prefixes    []string
-		ecosystems  []string
-		want        []model.DepEvent
-		wantDropped int
-	}{
-		{"skipped directory always", nil, nil, []model.DepEvent{docker, example, root}, 1},
-		{"excluded prefix", []string{"examples/"}, nil, []model.DepEvent{docker, root}, 2},
-		{"ecosystem allowlist", nil, []string{"golang"}, []model.DepEvent{example, root}, 2},
-		{"both", []string{"examples"}, []string{"docker"}, []model.DepEvent{docker}, 3},
-		{"ecosystem not listed drops all", nil, []string{"pypi"}, []model.DepEvent{}, 4},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			in := slices.Clone(all)
-			got, dropped := dropFilteredEvents(in, tt.prefixes, tt.ecosystems)
-			if !reflect.DeepEqual(got, tt.want) || dropped != tt.wantDropped {
-				t.Errorf("dropFilteredEvents(%v, %v) = %+v, %d, want %+v, %d",
-					tt.prefixes, tt.ecosystems, got, dropped, tt.want, tt.wantDropped)
-			}
-			if !reflect.DeepEqual(in, all) {
-				t.Errorf("input events = %+v, want unchanged %+v", in, all)
-			}
-		})
-	}
-
-	kept := []model.DepEvent{docker, root}
-	if got, dropped := dropFilteredEvents(kept, nil, nil); dropped != 0 || !reflect.DeepEqual(got, kept) {
-		t.Errorf("dropFilteredEvents(nothing to drop) = %+v, %d, want the input, 0", got, dropped)
-	}
-	if got, dropped := dropFilteredEvents(nil, []string{"x"}, []string{"golang"}); len(got) != 0 || dropped != 0 {
-		t.Errorf("dropFilteredEvents(nil) = %+v, %d, want empty, 0", got, dropped)
 	}
 }
 

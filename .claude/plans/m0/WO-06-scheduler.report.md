@@ -84,3 +84,80 @@ Outside scope:
 Concerns:
 - The TZ-prefix rejection is my reading of requirement 2. Requirement 1 says only "an expression the standard five-field parser rejects", and the robfig parser on its own accepts `CRON_TZ=Zone 0 8 * * *`. If the lead wants per-schedule zones, delete the prefix check in `parseFiveField` and the two `time zone prefix` rows in TestNew_Validation. The panic on a bare `TZ=UTC` would then need another guard.
 - When a chain panics, the rest of that chain is skipped. The Runner already recovers job panics, so this only happens when the Runner itself is faulty, but it differs from the error path, where the chain continues.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m0/WO-06-scheduler.md (finding: Stop with an already-cancelled ctx returned the wrapped error with no chain running; ruling 2026-11-19 added to requirement 7)
+Files changed:
+- internal/sched/scheduler.go (modified)
+- internal/sched/scheduler_test.go (modified)
+- .claude/plans/m0/WO-06-scheduler.report.md (modified, this section)
+
+Commands run:
+- `go test -race -count=1 -v ./internal/sched/` -> exit 0
+  --- PASS: TestTick_SkippedWhilePreviousRunning (0.00s)
+  --- PASS: TestStart_LogsOneLinePerEntry (0.00s)
+  --- PASS: TestStop_CancelledContextWhenIdle (0.00s)
+  --- PASS: TestTick_AfterStopStartsNoChain (0.00s)
+  --- PASS: TestChain_RunsJobsInOrder (0.00s)
+  --- PASS: TestChain_NoJobsRunsNothing (0.00s)
+  --- PASS: TestStop_ReturnsOnContextDone (0.00s)
+  --- PASS: TestChain_ContinuesAfterError (0.00s)
+  --- PASS: TestStop_BeforeStartAndTwice (0.00s)
+  --- PASS: TestStop_WaitsForRunningChain (0.00s)
+  --- PASS: TestChain_StopsOnCancelledContext (0.00s)
+  --- PASS: TestChain_PanicRecovered (0.00s)
+  --- PASS: TestNew_Validation (0.00s)
+  --- PASS: TestScheduler_FiresOnRealTicks (0.02s)
+  PASS
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	1.312s
+  (no skipped tests)
+- `go test -race -count=200 -run 'TestStop' ./internal/sched/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	1.167s
+- `go test -race -count=3 ./internal/sched/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	1.190s
+- `go test -race -count=1 -coverprofile=<scratchpad>/cover.out ./internal/sched/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	1.237s	coverage: 98.8% of statements
+- `make check` -> exit 0
+  ==> gofmt
+  ==> vet
+  go vet ./...
+  ==> build
+  go build ./...
+  ==> test
+  go test -race ./...
+  ok  	github.com/Amrit-Code/upstreamwatch/cmd/upw	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/config	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/model	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/query	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	1.142s
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/store	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/web	[no test files]
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+     On | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go list -f '{{join .Imports "\n"}}' ./internal/sched | grep -E 'upstreamwatch|robfig'` -> exit 0
+  github.com/Amrit-Code/upstreamwatch/internal/model
+  github.com/robfig/cron/v3
+- `git status --porcelain` -> exit 0
+   M internal/sched/scheduler.go
+   M internal/sched/scheduler_test.go
+
+Decisions:
+- The Scheduler now counts running chains itself. Under `s.mu`, `tick` checks `stopped` (and returns without starting a chain if it is set), checks and sets the entry's `running` flag (now a plain bool guarded by `s.mu` instead of an atomic), and increments `active`. A deferred `leave` resets the flag, decrements `active`, and closes `s.idle` when the count reaches zero.
+- `Stop` sets `stopped` under the lock. If `active > 0` it creates `idle`, then calls `cron.Stop()` to end the tick loop. It does not wait on the context cron returns. With no chain active it returns nil, whatever the state of ctx. Otherwise it waits for `idle` or `ctx.Done()`. When ctx is done it checks `idle` once more without blocking, so a chain that has already returned is not reported as still running, which could otherwise happen because select picks at random between two ready cases.
+- The atomic `stopping` flag is gone: `runChain` reads `stopped` through `isStopped()` before each job, so `sync/atomic` is no longer imported.
+- Added `TestTick_AfterStopStartsNoChain` for "ticks that fire after Stop began must not start a chain", alongside the required `TestStop_CancelledContextWhenIdle`.
+
+Outside scope: none new.
+Concerns: none new. The two concerns from the first round still apply.

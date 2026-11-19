@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -32,12 +31,17 @@ type Scheduler struct {
 	logger  *slog.Logger
 	cron    *cron.Cron
 
+	// mu guards the fields below and each entry's running flag.
 	mu      sync.Mutex
 	started bool
+	// stopped is set by Stop. Once it is set no chain starts, and a chain
+	// that is still running starts no further job.
 	stopped bool
-	// stopping is set by Stop before it waits, so a chain that is still
-	// running starts no further job.
-	stopping atomic.Bool
+	// active counts the chains in progress.
+	active int
+	// idle is created by Stop when chains are still in progress and closed
+	// when the last of them returns.
+	idle chan struct{}
 }
 
 // entry is a validated Entry with its parsed schedule.
@@ -47,8 +51,8 @@ type entry struct {
 	jobs     []string
 	schedule cron.Schedule
 	// running is true while a chain of this entry is in progress; a tick that
-	// finds it set is skipped.
-	running atomic.Bool
+	// finds it set is skipped. Guarded by Scheduler.mu.
+	running bool
 }
 
 // parseFunc turns a cron expression into a schedule. New uses
@@ -142,9 +146,10 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 // Stop stops new ticks and waits until every chain already running has
-// returned. A running chain starts no further job once Stop is called. If ctx
-// is done first, Stop returns ctx.Err() wrapped. Stop before Start, and any
-// call after the first, return nil.
+// returned. Once Stop is called no chain starts and a running chain starts no
+// further job. If ctx is done while a chain is still running, Stop returns
+// ctx.Err() wrapped; when no chain is running it returns nil whatever the
+// state of ctx. Stop before Start, and any call after the first, return nil.
 func (s *Scheduler) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.started || s.stopped {
@@ -153,26 +158,73 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.stopped = true
-	s.stopping.Store(true)
+	var idle chan struct{}
+	if s.active > 0 {
+		idle = make(chan struct{})
+		s.idle = idle
+	}
 	s.mu.Unlock()
 
-	done := s.cron.Stop()
+	// The context cron returns is not waited on: chains are counted in
+	// active, and a tick cron fires from now on returns without starting one.
+	s.cron.Stop()
+	if idle == nil {
+		return nil
+	}
 	select {
-	case <-done.Done():
+	case <-idle:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("stop scheduler: wait for running schedules: %w", ctx.Err())
+		// select picks at random when both are ready; a chain that has
+		// already returned is not still running.
+		select {
+		case <-idle:
+			return nil
+		default:
+			return fmt.Errorf("stop scheduler: wait for running schedules: %w", ctx.Err())
+		}
 	}
 }
 
-// tick runs e's chain unless a previous chain of e is still in progress.
+// tick runs e's chain unless Stop has been called or a previous chain of e is
+// still in progress.
 func (s *Scheduler) tick(ctx context.Context, e *entry) {
-	if !e.running.CompareAndSwap(false, true) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	if e.running {
+		s.mu.Unlock()
 		s.logger.Warn("schedule tick skipped, previous run still in progress", "schedule", e.name)
 		return
 	}
-	defer e.running.Store(false)
+	e.running = true
+	s.active++
+	s.mu.Unlock()
+
+	defer s.leave(e)
 	s.runChain(ctx, e)
+}
+
+// leave marks e's chain as returned and signals Stop when it was the last
+// chain in progress.
+func (s *Scheduler) leave(e *entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e.running = false
+	s.active--
+	if s.active == 0 && s.idle != nil {
+		close(s.idle)
+		s.idle = nil
+	}
+}
+
+// isStopped reports whether Stop has been called.
+func (s *Scheduler) isStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
 }
 
 // runChain hands e's jobs to the Runner one after another. A job's error is
@@ -185,7 +237,7 @@ func (s *Scheduler) runChain(ctx context.Context, e *entry) {
 		}
 	}()
 	for _, job := range e.jobs {
-		if ctx.Err() != nil || s.stopping.Load() {
+		if ctx.Err() != nil || s.isStopped() {
 			return
 		}
 		if _, err := s.runner.Run(ctx, job, model.Scope{}); err != nil {

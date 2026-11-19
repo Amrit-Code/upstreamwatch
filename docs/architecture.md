@@ -151,7 +151,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
-After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. The ingest and timeline jobs are built but `cmd/upw` does not register them with the Runner yet. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
 
 ## What each job does
 
@@ -180,14 +180,15 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | `GET /f/{id}` | finding detail (read) |
 | `POST /f/{id}/ack\|snooze\|dismiss` | `findings.Service` |
 | `POST /f/{id}/label` | `eval.Service` |
-| `GET /repos/{slug}` | timeline (read) |
+| `GET /repos` | repository list (read) |
+| `GET /repos/{slug}` | timeline (read); optional query parameters `q` (substring of the package URL), `pkg` (exact package URL, the history of one package) and `on` (`YYYY-MM-DD`, only intervals in force at the end of that UTC day) |
 | `GET /coverage` | coverage (read) |
 | `GET /eval` | eval report (read) |
 | `GET /settings`, `POST /settings` | `settings.Service` (LLM key, write-only; scheduled with the LLM milestone, M4) |
 | `GET /health` | last runs, JSON |
 | `GET /static/style.css` | the embedded stylesheet |
 
-After M0 the server answers `GET /`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first, through `internal/query`. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set. A host check answers 421 to a request whose `Host` header is not the listen address, a loopback name (`localhost`, `127.0.0.1`, `::1`, the only names answered when the listen host is unspecified, such as `0.0.0.0`) or the host of `http.base_url`; it stops a DNS-rebinding page from reaching the UI. A `http.base_url` with an empty hostname is rejected by config validation and by the server. On shutdown, requests still running after ten seconds have their connections closed.
+After M1 the server answers `GET /`, `GET /repos`, `GET /repos/{slug}`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first. The pages read through `internal/query`: `web` declares the `TimelineReader` interface (`Repos` and `Timeline`) that `query.Service` satisfies. `GET /repos/{slug}` answers 404 for an unknown slug and 400 for an `on` value that is not a date. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set. A host check answers 421 to a request whose `Host` header is not the listen address, a loopback name (`localhost`, `127.0.0.1`, `::1`, the only names answered when the listen host is unspecified, such as `0.0.0.0`) or the host of `http.base_url`; it stops a DNS-rebinding page from reaching the UI. A `http.base_url` with an empty hostname is rejected by config validation and by the server. On shutdown, requests still running after ten seconds have their connections closed.
 
 The settings page never shows the stored key. It shows the last four characters only.
 
@@ -197,13 +198,14 @@ The settings page never shows the stored key. It shows the last four characters 
 |---|---|
 | `upw serve` | starts Scheduler and web.Server; stops on SIGINT or SIGTERM, web server first, then the scheduler, then the store |
 | `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all` |
-| `upw timeline`, `findings` | `internal/query` |
+| `upw timeline <slug> [package-url] [-on YYYY-MM-DD] [-json]` | `query.Service.Timeline`; prints the repo's dependency intervals as a table, or as a JSON array with `-json`; `-on` keeps the intervals in force at the end of that UTC day; builds no Runner and starts nothing |
+| `upw findings` | `internal/query` |
 | `upw llm estimate\|rejudge` | `triage.Service` |
 | `upw eval run\|report\|import` | `eval.Service` (`import` imports labels) |
 | `upw export verdicts\|labels\|state` | store export; one kind per invocation, written to stdout. `upw eval export` is an alias of `upw export labels` |
 | `upw doctor` | each outbound adapter's `Check` (the `Checker` interface in [interfaces.md](interfaces.md)); prints one line per check, does not open the database and exits 1 if any check fails. The probes are listed in [external-sources.md](external-sources.md) |
 
-Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M0 no job is registered with the Runner, so `run all -once` has nothing to run and a schedule's chain is empty until the milestone that adds its jobs. The commands `timeline`, `findings`, `llm`, `eval` and `export` are planned for later milestones.
+Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M1 the Runner has two jobs, ingest and timeline, so `run all -once` runs those two; a schedule's chain leaves out the jobs not registered yet, so the `ingest` schedule runs ingest then timeline until the usage and upstream jobs exist, and the other schedules' chains are empty until the milestones that add their jobs. The commands `findings`, `llm`, `eval` and `export` are planned for later milestones.
 
 ### Schedules
 

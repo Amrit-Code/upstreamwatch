@@ -63,9 +63,13 @@ One command, `make check`, runs six steps in order: gofmt, `go vet`, build, `go 
 - The layering lint is `go-arch-lint`, run with `go run <module>@<version>` (v1.19.2) so it never enters `go.mod`; its rules are in `.go-arch-lint.yml`. Its deep scan is off (`deepScan: false`), because the scan treats `cmd/upw` passing `*store.DB` into a constructor that takes a consumer-declared interface as the store depending on that consumer, which is how the services are wired. The import rules are still checked in full.
 - The import check is `scripts/check-imports.sh`. It uses `go list` to fail when `database/sql` is imported outside `internal/store`, or `os/exec` outside `internal/gitsrc` and `internal/testutil`. It looks at non-test imports only.
 
+## make e2e
+
+`make e2e` is separate from `make check`: it needs the network and `git-pkgs` on `PATH`, so it is not part of the acceptance command. It runs `go test -tags e2e -race -count=1 -run TestParity -v -timeout 20m ./cmd/upw/`, the referee test of `cmd/upw/parity_e2e_test.go`, which compares the timelines of two pinned public repositories with `git pkgs history` (see [external-sources.md](external-sources.md)). `upw.dev.yaml` lists four public repositories as fixtures. It is a test run with no server or container, so it runs on the Mac (with `git-pkgs` from Homebrew) as well as in CI; the owner's ruling keeps servers and containers on the VM.
+
 ## CI and the image
 
-`.github/workflows/ci.yml` runs on pushes to `main`, on `v*` tags and on pull requests. The `check` job runs `make check` with the Go version from `go.mod`. The `image` job builds `deploy/Dockerfile` for `linux/amd64` after `check` passes and, only on a `v*` tag, pushes it to the GitHub container registry as the tag and `latest`. The image is Alpine with `git`, `ca-certificates` and `tzdata`, runs as a non-root user, and starts `upw serve -config /etc/upstreamwatch/upw.yaml`. `deploy/compose.yml` publishes port 8080 on the host's loopback only. See the `upw-deploy` skill for deployment.
+`.github/workflows/ci.yml` runs on pushes to `main`, on `v*` tags and on pull requests. The `check` job runs `make check` with the Go version from `go.mod`. The `e2e` job runs only on pushes to `main`: it installs `git-pkgs` v0.22.0 from the project's release archive, verifies its SHA-256 checksum, and runs `make e2e` (30-minute job limit). The `image` job builds `deploy/Dockerfile` for `linux/amd64` after `check` passes and, only on a `v*` tag, pushes it to the GitHub container registry as the tag and `latest`. The image is Alpine with `git`, `ca-certificates` and `tzdata`, runs as a non-root user, and starts `upw serve -config /etc/upstreamwatch/upw.yaml`. `deploy/compose.yml` publishes port 8080 on the host's loopback only. See the `upw-deploy` skill for deployment.
 
 ## Git policy
 

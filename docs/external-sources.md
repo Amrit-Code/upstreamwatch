@@ -42,11 +42,11 @@ Every HTTP adapter sends its requests through `internal/httpx` (the email notifi
 `internal/gitsrc` runs the `git` binary for every clone and fetch. It does not use `internal/httpx`, so it applies its own checks before each network operation:
 
 - Only `https` URLs, with a host and no userinfo. A URL starting with `-`, an `scp`-style address, a local path and `<transport>::` remote-helper syntax are refused. Only tests allow `file://` URLs.
-- The host is resolved and the connection refused when any address is one `httpx.BlockedAddr` refuses (the ranges listed above); git is then pinned to the address that was checked. A target marked `AllowPrivateHost` is exempt from the address check; the URL must still be https. The config key that sets it, `targets[].allow_private_hosts`, is recorded in [decisions.md](decisions.md) and is not in the config loader yet.
+- The host is resolved and the connection refused when any address is one `httpx.BlockedAddr` refuses (the ranges listed above); git is then pinned to the address that was checked. A target marked `AllowPrivateHost` is exempt from the address check; the URL must still be https. The config key that sets it is `targets[].allow_private_hosts` (default false; see [decisions.md](decisions.md)).
 - The first sync creates the clone with `git init --bare` and fetches only the indexed branch, with no tags. The fetch lands on a staging ref, which is moved onto the branch only after it succeeded and the clone is within the size cap. Every fetch passes the URL on the command line, so no remote URL is stored in the clone's config and a URL change in config takes effect on the next fetch. A failed first sync leaves no clone behind.
 - The token is sent as an `Authorization` header scoped to the target's host, through environment config only: never on the command line, in the URL or in a file. Error text is scrubbed of it.
 - git runs with an explicit argument list, a minimal environment and an empty home directory, and with every protocol but https, credential helpers, redirects, submodules and hooks refused.
-- Limits, as the defaults of `gitsrc.Options`: a clone directory over 2048 MiB stops the fetch and fails the sync; a first sync has 30 minutes and a later fetch or `ls-remote` 10 minutes; `ReadBlobs` skips a blob over 5 MiB (it comes back as `TooLarge`). None of these has a config key yet.
+- Limits: a clone directory over 2048 MiB stops the fetch and fails the sync; a first sync has 30 minutes and a later fetch or `ls-remote` 10 minutes; `ReadBlobs` skips a blob over 5 MiB (it comes back as `TooLarge`). The first three are the config keys `git.max_clone_mb`, `git.clone_timeout` and `git.fetch_timeout`, with those values as defaults (the timeouts are Go durations such as `30m`; all three must be positive); `cmd/upw` passes them to `gitsrc.Options`. The 5 MiB blob limit has no config key.
 
 ## What `upw doctor` probes
 
@@ -87,3 +87,5 @@ Two outside tools are used only in tests, as referees:
 - `osv-scanner` checks our advisory matches against the same lockfiles.
 
 A difference between our output and a referee's is a bug in one of the two and is investigated, not papered over.
+
+The `git pkgs history` comparison runs as `make e2e` (the test `TestParity` in `cmd/upw/parity_e2e_test.go`, under the build tag `e2e`). It indexes two public repositories, each pinned to a commit, with upstreamwatch and with `git pkgs history`, and compares the dependency events. It needs the network and `git-pkgs` on `PATH`, so `make check` leaves it out. Each difference a recorded decision in [decisions.md](decisions.md) explains is listed in the test as an exception that names the event; an exception that no longer matches a difference fails the test. See [development.md](development.md) for the CI job.

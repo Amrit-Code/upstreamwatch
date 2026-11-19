@@ -58,7 +58,7 @@ The scheduler runs jobs one at a time and is the only writer to pipeline tables.
 - **Never pass a `time.Time` to the driver.** Without `_time_format` it writes Go's `String()` form (`2026-03-01 12:00:00 +0000 UTC`). Do not write times with SQLite's `datetime('now')` either; it returns `2026-03-01 12:00:00`, with a space and no zone. Both break comparisons with our own values.
 - **NULL maps to the zero `time.Time`** and back, through the scan helper.
 - **When comparing an outside timestamp with a stored one** (the OSV modified time, a GitHub issue update time), truncate both to seconds first. Otherwise a record with fractional seconds looks newer on every run and is fetched again every time.
-- **Timestamp columns end in `_ts` and hold ISO-8601 UTC text.** Every table has `created_ts` and `updated_ts`.
+- **Timestamp columns end in `_ts` and hold ISO-8601 UTC text.** Every table has `created_ts` and `updated_ts`, except `kv`, `http_cache` and `settings` (only `updated_ts`) and `schema_migrations` (`applied_ts`).
 - **`created_ts` and `updated_ts` are set by the store from its injected `now func() time.Time`,** not by SQL defaults, so tests control them.
 
 ## Transactions: InTx

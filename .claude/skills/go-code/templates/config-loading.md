@@ -1,6 +1,6 @@
 # Scaffold: config loading with ${ENV} references and redacted secrets
 
-Use this when writing or extending `internal/config`. The field list comes from `mvp-plan/PLAN.md` section 7 and the email notifier settings in `docs/external-sources.md`. The YAML library is not yet approved, so `yaml.Unmarshal` below stands for whichever module the owner approves. If that library can reject unknown keys, turn it on, so that a typo in `upw.yaml` is an error instead of a silently ignored setting.
+Use this when writing or extending `internal/config`. The field list comes from `mvp-plan/PLAN.md` section 7 and the email notifier settings in `docs/external-sources.md`. The YAML library is `go.yaml.in/yaml/v3` (approved 2026-11-19). Decode with a `yaml.Decoder` and `KnownFields(true)`, so that a typo in `upw.yaml` is an error instead of a silently ignored setting. `internal/config` is the working example.
 
 ## Two structs: what the file says, and what the program uses
 

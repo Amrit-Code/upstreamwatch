@@ -116,7 +116,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 		version    INTEGER PRIMARY KEY,
 		name       TEXT NOT NULL,
 		checksum   TEXT NOT NULL,
-		applied_at TEXT NOT NULL
+		applied_ts TEXT NOT NULL
 	)`
 	if _, err := db.pool.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("migrate: create schema_migrations: %w", err)
@@ -153,7 +153,7 @@ func (db *DB) Migrate(ctx context.Context) error {
 				return fmt.Errorf("apply %s: %w", m.name, err)
 			}
 			_, err := tx.q.ExecContext(ctx,
-				`INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
+				`INSERT INTO schema_migrations (version, name, checksum, applied_ts) VALUES (?, ?, ?, ?)`,
 				m.version, m.name, m.checksum, formatTime(db.now()))
 			return err
 		})

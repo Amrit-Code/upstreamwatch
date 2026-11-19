@@ -1,0 +1,8 @@
+upstreamwatch — 2026-07-14 — 4 new, 0 changed, 2 waiting for LLM budget
+
+NEW
+     … and 4 more https://upstreamwatch.example.ts.net/
+
+WAITING  2 issue candidates over today's LLM budget.
+Last runs: digest 08:00 running, ingest 07:05 ok, vulns 07:10 failed.
+Open: 11, acked: 4, snoozed: 2.  https://upstreamwatch.example.ts.net/

@@ -69,7 +69,7 @@ func TestRunHelp(t *testing.T) {
 
 func TestRunHelp_ListsCommands(t *testing.T) {
 	t.Parallel()
-	for _, cmd := range []string{"serve", "run", "help"} {
+	for _, cmd := range []string{"serve", "run", "timeline", "help"} {
 		if !strings.Contains(usage, "\n  "+cmd+" ") {
 			t.Errorf("usage does not list %q:\n%s", cmd, usage)
 		}
@@ -120,6 +120,7 @@ func TestRun_SubcommandHelp(t *testing.T) {
 		{name: "serve --help", args: []string{"serve", "--help"}, want: "usage: upw serve"},
 		{name: "run -h", args: []string{"run", "-h"}, want: "usage: upw run <job>"},
 		{name: "run job -h", args: []string{"run", "somejob", "-h"}, want: "usage: upw run <job>"},
+		{name: "timeline -h", args: []string{"timeline", "-h"}, want: "usage: upw timeline <slug>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

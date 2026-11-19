@@ -34,7 +34,7 @@ func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	}
 	defer func() { err = errors.Join(err, a.close()) }()
 
-	q := query.NewService(a.db, a.db, a.logger)
+	q := query.NewService(a.db, a.db, a.db, a.logger)
 	srv, err := web.NewServer(q, q, web.Options{Listen: a.cfg.HTTP.Listen, BaseURL: a.cfg.HTTP.BaseURL}, a.logger)
 	if err != nil {
 		return fmt.Errorf("build web server: %w", err)

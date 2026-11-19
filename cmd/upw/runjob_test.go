@@ -16,7 +16,7 @@ func TestRun_UnknownJob(t *testing.T) {
 	if got, want := run(t.Context(), args, &stdout, &stderr, noEnv), 1; got != want {
 		t.Errorf("run(%q) = %d, want %d", args, got, want)
 	}
-	want := "upw: unknown job \"bogus\"; known jobs: none registered yet\n"
+	want := "upw: unknown job \"bogus\"; known jobs: ingest, timeline\n"
 	if got := stderr.String(); !strings.HasSuffix(got, want) {
 		t.Errorf("run(%q) stderr = %q, want it to end with %q", args, got, want)
 	}
@@ -94,7 +94,7 @@ func TestRun_OnceAndRepoMisuse(t *testing.T) {
 	}
 }
 
-func TestRun_AllOnceNoJobs(t *testing.T) {
+func TestRun_AllOnceNoTargets(t *testing.T) {
 	t.Parallel()
 	cfg := writeConfig(t, "")
 	var stdout, stderr bytes.Buffer
@@ -102,11 +102,10 @@ func TestRun_AllOnceNoJobs(t *testing.T) {
 	if got, want := run(t.Context(), args, &stdout, &stderr, noEnv), 0; got != want {
 		t.Errorf("run(%q) = %d, want %d; stderr %q", args, got, want, stderr.String())
 	}
-	if got, want := stderr.String(), "upw: no jobs registered yet\n"; !strings.HasSuffix(got, want) {
-		t.Errorf("run(%q) stderr = %q, want it to end with %q", args, got, want)
-	}
-	if got := stdout.String(); got != "" {
-		t.Errorf("run(%q) stdout = %q, want empty", args, got)
+	want := "ingest: succeeded cloned=0 failed=0 fetched=0 targets=0\n" +
+		"timeline: succeeded commits_walked=0 events_written=0 failed=0 files_read=0 files_skipped=0 intervals=0 parse_errors=0 resets=0 skipped=0 targets=0\n"
+	if got := stdout.String(); got != want {
+		t.Errorf("run(%q) stdout = %q, want %q", args, got, want)
 	}
 }
 

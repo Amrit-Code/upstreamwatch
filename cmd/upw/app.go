@@ -14,7 +14,8 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/store"
 )
 
-// app holds what the shared start-up wires together.
+// app holds what the shared start-up wires together. runner is nil for
+// commands that only read the store.
 type app struct {
 	cfg    config.Config
 	logger *slog.Logger
@@ -22,10 +23,10 @@ type app struct {
 	runner *pipeline.Runner
 }
 
-// start loads the config, opens and migrates the store and builds the Runner.
-// The errors of config and store are returned unwrapped: they already name the
-// field or step that failed. On error nothing is left open.
-func start(ctx context.Context, configPath string, logger *slog.Logger, getenv func(string) string) (*app, error) {
+// openApp loads the config and opens and migrates the store. The errors of
+// config and store are returned unwrapped: they already name the field or
+// step that failed. On error nothing is left open.
+func openApp(ctx context.Context, configPath string, logger *slog.Logger, getenv func(string) string) (*app, error) {
 	cfg, err := config.Load(configPath, getenv)
 	if err != nil {
 		return nil, err
@@ -38,14 +39,25 @@ func start(ctx context.Context, configPath string, logger *slog.Logger, getenv f
 	if err := db.Migrate(ctx); err != nil {
 		return nil, errors.Join(err, closeStore(db))
 	}
+	return &app{cfg: cfg, logger: logger, db: db}, nil
+}
+
+// start does what openApp does and builds the Runner with every registered
+// job. On error nothing is left open.
+func start(ctx context.Context, configPath string, logger *slog.Logger, getenv func(string) string) (*app, error) {
+	a, err := openApp(ctx, configPath, logger, getenv)
+	if err != nil {
+		return nil, err
+	}
 
 	// Passing db as RunStore and FindingStore is the compile-time check that
 	// *store.DB satisfies the Runner's store interfaces.
-	runner, err := pipeline.NewRunner(registeredJobs(), db, db, logger)
+	runner, err := pipeline.NewRunner(registeredJobs(a.cfg, a.db, logger), a.db, a.db, logger)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("build runner: %w", err), closeStore(db))
+		return nil, errors.Join(fmt.Errorf("build runner: %w", err), a.close())
 	}
-	return &app{cfg: cfg, logger: logger, db: db, runner: runner}, nil
+	a.runner = runner
+	return a, nil
 }
 
 // close releases the store.
@@ -56,12 +68,6 @@ func closeStore(db *store.DB) error {
 		return fmt.Errorf("close store: %w", err)
 	}
 	return nil
-}
-
-// registeredJobs returns every job the Runner knows, in pipeline order. Each
-// milestone adds its jobs here; M0 has none.
-func registeredJobs() []pipeline.Job {
-	return []pipeline.Job{}
 }
 
 // scheduleEntries returns one entry per config schedules key, in a fixed

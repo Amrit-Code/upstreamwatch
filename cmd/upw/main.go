@@ -26,6 +26,7 @@ const usage = `usage: upw <command> [flags]
 commands:
   serve     run the scheduler and the web UI until interrupted
   run       run one job, or every job once with "run all -once"
+  doctor    check the config, secrets, git and the outside services
   help      print this help
 
 Run "upw <command> -h" for a command's flags.
@@ -52,6 +53,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		err = cmdServe(ctx, args[1:], stdout, stderr, getenv)
 	case "run":
 		err = cmdRun(ctx, args[1:], stdout, stderr, getenv)
+	case "doctor":
+		err = cmdDoctor(ctx, args[1:], stdout, stderr, getenv, doctorChecks)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0

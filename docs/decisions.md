@@ -79,6 +79,7 @@ Rulings the lead session made while planning M2, in the work orders under `.clau
 - A GitHub Actions tag with fewer than three numeric parts (`v4`, `v4.1`) is floating: it is completed with `.0` and matched with confidence at most medium, like a two-component toolchain version. An Action pinned by commit SHA is matched only through an advisory's explicit `versions` list.
 - Confidence (WO-06): low when matched only through the `versions` list; medium for any record not from GO, PYSEC, RUSTSEC or GHSA, for a matching range with no fixed version above the pin, or for a floating pin; high otherwise. PLAN.md 5.4's "conflicting ranges across aliases" rule is not applied, because aliases are not fetched.
 - Notifier errors carry the status code and host, never the response body.
+- Every job takes one shared lock file, `<data_dir>/locks/pipeline.lock`, instead of one lock per job: a vulns run in `upw serve` overlapping a `upw run digest` (or a timeline rebuild) in another process could otherwise report a finding before it changed, or match against intervals being replaced (Astra review of WO-13). Jobs from any processes on one data directory now run one at a time, as the Runner already does inside one process.
 - The weekly heartbeat is decided inside the digest job: when there is nothing to report and the most recent `notify.heartbeat` fire time is after the last sent digest, the job sends the "all quiet" message. `cmd/upw` gives the job the fire-time function built from the cron expression.
 
 ## The eight accepted changes

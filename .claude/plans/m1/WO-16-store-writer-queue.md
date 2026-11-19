@@ -22,7 +22,7 @@ Read-only: migrations, every other store file, every other package.
 1. All `*DB` values derived from one `store.Open` share one write queue. `InTx` (the outermost call; a nested `InTx` joins the transaction as today) acquires the queue before `BEGIN IMMEDIATE` and releases it after commit or rollback, including on panic.
 2. Acquiring the queue honours the caller's context: if the context ends while waiting, `InTx` returns an error wrapping the context's error and opens no transaction.
 3. Waiters are served in arrival order closely enough that no writer waits behind an unbounded number of later arrivals (a buffered channel of size 1, or a `sync.Mutex` plus context handling, is acceptable if the reasoning is written in a comment; Go's `sync.Mutex` has starvation mode).
-4. Reads outside `InTx` are not queued. Single-statement writes outside `InTx` (if any exist) are listed in the report; route them through the queue too.
+4. Reads outside `InTx` are not queued. Single-statement writes outside `InTx` (if any exist) are listed in the report for the lead; do not change them (they are outside the owned files).
 5. `busy_timeout` stays at 5000 ms for cross-process contention.
 
 ## Tests to include

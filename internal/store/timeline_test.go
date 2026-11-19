@@ -615,3 +615,83 @@ func TestDB_ApplyTimeline_PackageGainsOnlyAMissingEcosystem(t *testing.T) {
 			eco, updated, "pypi", later.Format(time.RFC3339))
 	}
 }
+
+func TestDB_ApplyTimeline_StoresSettings(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	repoID := newTimelineRepo(t, db)
+	ctx := t.Context()
+
+	repo, err := db.GetRepo(ctx, "example-server")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if repo.TimelineSettings != "" {
+		t.Errorf("TimelineSettings before any run = %q, want empty", repo.TimelineSettings)
+	}
+
+	const fp = "v1;unity=false;eco=golang;exclude=examples"
+	apply(t, db, model.TimelineUpdate{
+		RepoID:     repoID,
+		Commits:    []model.Commit{commitAt(1)},
+		Manifests:  map[string]model.ManifestInfo{"go.mod": goMod},
+		IndexedSHA: sha(1),
+		Settings:   fp,
+	})
+	repo, err = db.GetRepo(ctx, "example-server")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if repo.TimelineSettings != fp || repo.LastIndexedSHA != sha(1) {
+		t.Errorf("GetRepo() settings %q indexed %q, want %q %q", repo.TimelineSettings, repo.LastIndexedSHA, fp, sha(1))
+	}
+	repos, err := db.ListRepos(ctx)
+	if err != nil {
+		t.Fatalf("ListRepos() error = %v", err)
+	}
+	if len(repos) != 1 || repos[0].TimelineSettings != fp {
+		t.Errorf("ListRepos() = %+v, want one repo with settings %q", repos, fp)
+	}
+
+	// A settings change alone, head unchanged, stores the new fingerprint.
+	const fp2 = "v1;unity=false;eco=;exclude="
+	apply(t, db, model.TimelineUpdate{RepoID: repoID, IndexedSHA: sha(1), Settings: fp2})
+	if repo, err = db.GetRepo(ctx, "example-server"); err != nil || repo.TimelineSettings != fp2 {
+		t.Errorf("GetRepo() after settings change = %q, %v; want %q", repo.TimelineSettings, err, fp2)
+	}
+
+	// An empty fingerprint is stored as NULL and reads back empty.
+	apply(t, db, model.TimelineUpdate{RepoID: repoID, IndexedSHA: sha(1)})
+	if n := count(t, db, `SELECT COUNT(*) FROM repos WHERE id = ? AND timeline_settings IS NULL`, repoID); n != 1 {
+		t.Errorf("repos with NULL timeline_settings = %d, want 1", n)
+	}
+	if repo, err = db.GetRepo(ctx, "example-server"); err != nil || repo.TimelineSettings != "" {
+		t.Errorf("GetRepo() after empty settings = %q, %v; want empty", repo.TimelineSettings, err)
+	}
+}
+
+func TestDB_ApplyTimeline_SettingsRolledBackOnError(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	repoID := newTimelineRepo(t, db)
+
+	// An event naming an unknown commit fails the update, so neither the
+	// indexed commit nor the settings move.
+	err := db.ApplyTimeline(t.Context(), model.TimelineUpdate{
+		RepoID:     repoID,
+		Manifests:  map[string]model.ManifestInfo{"go.mod": goMod},
+		Events:     []model.DepEvent{{CommitSHA: sha(9), ManifestPath: "go.mod", Package: pkgLibA, Change: model.ChangeAdded, Version: "v1.0.0"}},
+		IndexedSHA: sha(9),
+		Settings:   "v1;unity=false;eco=;exclude=",
+	})
+	if err == nil {
+		t.Fatal("ApplyTimeline() error = nil, want an error")
+	}
+	repo, err := db.GetRepo(t.Context(), "example-server")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if repo.TimelineSettings != "" || repo.LastIndexedSHA != "" {
+		t.Errorf("after failed apply: settings %q indexed %q, want both empty", repo.TimelineSettings, repo.LastIndexedSHA)
+	}
+}

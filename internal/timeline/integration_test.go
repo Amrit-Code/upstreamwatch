@@ -986,39 +986,92 @@ func TestTimeline_ExcludedPaths(t *testing.T) {
 	}
 }
 
-// Tightening exclude_paths closes nothing by itself: the next run, with no
-// new commit, drops the intervals of the newly excluded manifest from the
-// store and keeps the others' rows; the events stay stored.
-func TestTimeline_RetroactiveExclusion(t *testing.T) {
+// TestTimeline_SettingsChangeRebuilds tightens exclude_paths, lets the
+// excluded manifest drop a dependency upstream, then loosens the exclusion
+// again. Each settings change rebuilds the repo from the root, so the final
+// timeline equals a fresh full index: the dropped dependency's interval is
+// closed where upstream removed it, not resurrected as open from the events
+// stored before the exclusion.
+func TestTimeline_SettingsChangeRebuilds(t *testing.T) {
 	t.Parallel()
+	const purlB = "pkg:golang/example.com/b"
+	const purlC = "pkg:golang/example.com/c"
 	up := gitrepo.New(t, "main")
 	up.Write("go.mod", goMod("example.com/a v1.0.0"))
-	up.Write("examples/demo/requirements.txt", "flask==3.0.0\n")
+	up.Write("examples/go.mod", goMod("example.com/b v1.0.0", "example.com/c v1.0.0"))
 	c1 := up.Commit("first", day(1))
 
-	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
-	s.sync()
-	before := s.intervals("app")
-	events := s.events("app")
-	if len(before) != 2 || len(events) != 2 {
-		t.Fatalf("after the first run: %d intervals, %d events, want 2 and 2", len(before), len(events))
+	plain := target{slug: "app", url: up.URL(), branch: "main"}
+	excluding := target{slug: "app", url: up.URL(), branch: "main", exclude: []string{"examples"}}
+
+	s := newStack(t, true, plain)
+	first := s.sync()
+	checkStats(t, first, map[string]int64{"resets": 0, "events_written": 3, "intervals": 3})
+	fpPlain := s.repo("app").TimelineSettings
+	if fpPlain == "" {
+		t.Fatal("TimelineSettings after the first run is empty, want the fingerprint stored")
+	}
+	if n := len(ofPURL(s.intervals("app"), purlC)); n != 1 {
+		t.Fatalf("intervals of c after the first run = %d, want 1", n)
 	}
 
-	s.retarget(target{slug: "app", url: up.URL(), branch: "main", exclude: []string{"examples"}})
-	run := s.run("timeline")
-	checkStats(t, run, map[string]int64{"commits_walked": 0, "events_written": 0, "intervals": 1, "resets": 0})
+	// Tighten: the examples manifest's intervals and events are gone.
+	s.retarget(excluding)
+	tightened := s.run("timeline")
+	checkStats(t, tightened, map[string]int64{"resets": 1, "commits_walked": 1, "files_excluded": 1,
+		"events_written": 1, "intervals": 1})
+	wantA := []iv{{"go.mod", purlA, "v1.0.0", c1, day(1), "", time.Time{}}}
+	if got := ivs(s.intervals("app")); !reflect.DeepEqual(got, wantA) {
+		t.Errorf("intervals after the exclusion =\n%+v\nwant\n%+v", got, wantA)
+	}
+	for _, e := range s.events("app") {
+		if strings.HasPrefix(e.ManifestPath, "examples/") {
+			t.Errorf("event of the excluded manifest kept: %+v", e)
+		}
+	}
+	fpExcluding := s.repo("app").TimelineSettings
+	if fpExcluding == "" || fpExcluding == fpPlain {
+		t.Errorf("TimelineSettings after the exclusion = %q, want a fingerprint other than %q", fpExcluding, fpPlain)
+	}
 
-	after := s.intervals("app")
-	want := []iv{{"go.mod", purlA, "v1.0.0", c1, day(1), "", time.Time{}}}
-	if got := ivs(after); !reflect.DeepEqual(got, want) {
-		t.Errorf("intervals after the exclusion =\n%+v\nwant\n%+v", got, want)
+	// Upstream drops c from the excluded manifest; the run walks on without a
+	// rebuild and stores nothing for it.
+	up.Write("examples/go.mod", goMod("example.com/b v1.0.0"))
+	up.Commit("drop c from the example", day(2))
+	walked := s.sync()
+	checkStats(t, walked, map[string]int64{"resets": 0, "commits_walked": 1, "files_excluded": 1, "events_written": 0})
+
+	// Loosen again: rebuilt from the root, so c is closed at its removal.
+	s.retarget(plain)
+	loosened := s.run("timeline")
+	checkStats(t, loosened, map[string]int64{"resets": 1, "commits_walked": 2, "files_excluded": 0})
+	for _, i := range ofPURL(s.intervals("app"), purlC) {
+		if i.IsOpen() {
+			t.Errorf("interval of c open after loosening: %+v, want it closed at its upstream removal", i)
+		}
 	}
-	if kept := ofPURL(before, purlA); len(after) == 1 && len(kept) == 1 && after[0].ID != kept[0].ID {
-		t.Errorf("interval of a ID = %d, want kept %d", after[0].ID, kept[0].ID)
+	if n := len(ofPURL(s.intervals("app"), purlB)); n != 1 {
+		t.Errorf("intervals of b after loosening = %d, want 1", n)
 	}
-	if got := s.events("app"); !reflect.DeepEqual(got, events) {
-		t.Errorf("events after the exclusion =\n%+v\nwant unchanged\n%+v", got, events)
+	if got := s.repo("app").TimelineSettings; got != fpPlain {
+		t.Errorf("TimelineSettings after loosening = %q, want %q", got, fpPlain)
 	}
+
+	fresh := newStack(t, true, plain)
+	fresh.sync()
+	if got, want := evs(s.events("app")), evs(fresh.events("app")); !reflect.DeepEqual(got, want) {
+		t.Errorf("events after loosening =\n%+v\nwant those of a fresh full index\n%+v", got, want)
+	}
+	if got, want := ivs(s.intervals("app")), ivs(fresh.intervals("app")); !reflect.DeepEqual(got, want) {
+		t.Errorf("intervals after loosening =\n%+v\nwant those of a fresh full index\n%+v", got, want)
+	}
+	if got, want := s.commitSHAs("app"), fresh.commitSHAs("app"); !reflect.DeepEqual(got, want) {
+		t.Errorf("stored commits after loosening = %v, want those of a fresh full index %v", got, want)
+	}
+
+	// With head and settings unchanged the next run does nothing.
+	next := s.run("timeline")
+	checkStats(t, next, map[string]int64{"resets": 0, "commits_walked": 0, "events_written": 0})
 }
 
 // The clone directory is never the fixture: a sanity check that the stack

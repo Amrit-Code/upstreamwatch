@@ -179,7 +179,8 @@ func (db *DB) ListIntervals(ctx context.Context, repoID int64) ([]model.DepInter
 // packages named by u.Events and u.Intervals, inserts u.Events, replaces the
 // repo's intervals with u.Intervals keeping the row ID of every interval whose
 // manifest, package and opening commit are unchanged, and sets the repo's last
-// indexed commit to u.IndexedSHA. An event's commit must be in u.Commits or
+// indexed commit to u.IndexedSHA and its timeline settings fingerprint to
+// u.Settings (NULL when empty). An event's commit must be in u.Commits or
 // already stored for the repo, and an event's or interval's manifest path must
 // be in u.Manifests or already stored. Rows whose values do not change are
 // not written. An unknown repo ID is an error wrapping model.ErrNotFound.
@@ -207,9 +208,9 @@ type timelineApply struct {
 }
 
 func (a *timelineApply) apply(ctx context.Context, u model.TimelineUpdate) error {
-	var indexed sql.NullString
+	var indexed, settings sql.NullString
 	err := a.db.q.QueryRowContext(ctx,
-		`SELECT last_indexed_sha FROM repos WHERE id = ?`, a.repoID).Scan(&indexed)
+		`SELECT last_indexed_sha, timeline_settings FROM repos WHERE id = ?`, a.repoID).Scan(&indexed, &settings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("repo %d: %w", a.repoID, model.ErrNotFound)
 	}
@@ -236,11 +237,11 @@ func (a *timelineApply) apply(ctx context.Context, u model.TimelineUpdate) error
 	if err := a.replaceIntervals(ctx, u.Intervals); err != nil {
 		return err
 	}
-	if indexed.String != u.IndexedSHA {
+	if indexed.String != u.IndexedSHA || settings.String != u.Settings {
 		if _, err := a.db.q.ExecContext(ctx,
-			`UPDATE repos SET last_indexed_sha = ?, updated_ts = ? WHERE id = ?`,
-			nullText(u.IndexedSHA), a.now, a.repoID); err != nil {
-			return fmt.Errorf("set last indexed commit: %w", err)
+			`UPDATE repos SET last_indexed_sha = ?, timeline_settings = ?, updated_ts = ? WHERE id = ?`,
+			nullText(u.IndexedSHA), nullText(u.Settings), a.now, a.repoID); err != nil {
+			return fmt.Errorf("set last indexed commit and settings: %w", err)
 		}
 	}
 	return nil

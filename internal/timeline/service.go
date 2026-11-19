@@ -87,7 +87,8 @@ func NewService(git GitSource, repos RepoStore, store TimelineStore, extractors 
 func (s *Service) Name() string { return jobName }
 
 // Run indexes every target in scope, in config order. With scope.Rebuild
-// every target in scope is rebuilt from the root. A target that is not
+// every target in scope is rebuilt from the root; without it, so is a target
+// whose indexing settings changed since its last run. A target that is not
 // stored or was never fetched is skipped. A target whose git or store call
 // fails is logged and the others continue; the returned error then names
 // every failed target. The stats count the work done, including the work of
@@ -146,13 +147,12 @@ func (s *Service) targetsInScope(scope model.Scope) ([]TargetSettings, error) {
 
 // indexTarget brings one target's timeline up to its branch head and returns
 // the target's counters, which on an error hold the work done before it.
-// The timeline is rebuilt from the root when rebuild is set or when the last
-// indexed commit is not on the head's first-parent chain. Otherwise it walks
-// on from the last indexed commit, leaving out of the state and the
-// intervals every stored event that the target's current exclusions or
-// ecosystem allowlist reject; when the head has not moved and no stored
-// event is left out, nothing is done. Nothing is stored unless ApplyTimeline
-// succeeds.
+// The timeline is rebuilt from the root when rebuild is set, when the stored
+// settings fingerprint is set and differs from t's, or when the last indexed
+// commit is not on the head's first-parent chain. Otherwise it walks on from
+// the last indexed commit; when the head has not moved and the stored
+// fingerprint equals t's, nothing is done. Every update stores t's
+// fingerprint. Nothing is stored unless ApplyTimeline succeeds.
 func (s *Service) indexTarget(ctx context.Context, t TargetSettings, rebuild bool) (model.Stats, error) {
 	st := model.Stats{}
 	repo, err := s.repos.GetRepo(ctx, t.Slug)
@@ -175,8 +175,17 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings, rebuild boo
 		return st, fmt.Errorf("read head: %w", err)
 	}
 
+	settings := settingsFingerprint(t)
 	from := repo.LastIndexedSHA
 	reset := rebuild
+	// An empty stored fingerprint (first run, or a timeline built before
+	// fingerprints were stored) is not a change: the run stores one.
+	if !reset && repo.TimelineSettings != "" && repo.TimelineSettings != settings {
+		// Stored events of paths or ecosystems filtered under the old settings
+		// are missing or stale, so only a walk from the root is correct.
+		s.logger.Warn("timeline settings changed, rebuilding from root", "repo", t.Slug)
+		reset = true
+	}
 	if !reset && from != "" && from != head {
 		// A commit reached only through a merge's second parent was never on
 		// the branch as the new head sees it, so walking on from it would
@@ -199,16 +208,12 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings, rebuild boo
 
 	var stored []model.DepEvent
 	if !reset {
+		if head == from && repo.TimelineSettings == settings {
+			return st, nil
+		}
 		stored, err = s.store.ListEvents(ctx, repo.ID)
 		if err != nil {
 			return st, fmt.Errorf("list events: %w", err)
-		}
-		var filtered int
-		stored, filtered = dropFilteredEvents(stored, t.ExcludePaths, t.Ecosystems)
-		// With nothing new to walk, the run still replaces the intervals when
-		// tightened rules left stored events out, so theirs disappear.
-		if head == from && filtered == 0 {
-			return st, nil
 		}
 	}
 	state := stateFromEvents(stored)
@@ -305,6 +310,7 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings, rebuild boo
 		Events:     events,
 		Intervals:  intervals,
 		IndexedSHA: head,
+		Settings:   settings,
 	})
 	if err != nil {
 		return st, fmt.Errorf("apply timeline: %w", err)

@@ -285,6 +285,7 @@ func TestRun_FirstRun(t *testing.T) {
 			interval("go.mod", b1, c1, nil),
 		},
 		IndexedSHA: "c3",
+		Settings:   settingsFingerprint(TargetSettings{}),
 	}
 	if u := onlyApply(t, ts); !reflect.DeepEqual(u, want) {
 		t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
@@ -396,6 +397,7 @@ func TestRun_ExcludedPaths(t *testing.T) {
 			interval("examples2/go.mod", b2, c3, nil),
 		},
 		IndexedSHA: "c3",
+		Settings:   settingsFingerprint(TargetSettings{ExcludePaths: []string{"examples"}}),
 	}
 	if u := onlyApply(t, ts); !reflect.DeepEqual(u, want) {
 		t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
@@ -406,25 +408,31 @@ func TestRun_ExcludedPaths(t *testing.T) {
 	})
 }
 
-func TestRun_NoNewCommits(t *testing.T) {
+func TestRun_NoWorkPathSkipsListEvents(t *testing.T) {
 	t.Parallel()
+	settings := TargetSettings{Slug: "alpha", Ecosystems: []string{"golang"}, ExcludePaths: []string{"examples"}}
 	repo := testRepo(1, "alpha")
 	repo.LastIndexedSHA = "c3"
+	// Stored from equal settings written in another order.
+	repo.TimelineSettings = settingsFingerprint(TargetSettings{Ecosystems: []string{"golang"}, ExcludePaths: []string{"examples/"}})
 	git := &fakeGit{heads: map[string]string{"alpha": "c3"}}
 	ts := &fakeTimelineStore{}
 	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
-		[]Extractor{goExtractor()}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+		[]Extractor{goExtractor()}, nil, Options{Targets: []TargetSettings{settings}}, discard())
 
 	got, err := s.Run(t.Context(), model.Scope{})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
+	if want := []string{"alpha"}; !reflect.DeepEqual(git.headCalls, want) {
+		t.Errorf("Head calls = %v, want %v", git.headCalls, want)
+	}
 	if len(git.commitCalls) != 0 || len(git.readCalls) != 0 || len(git.chainCalls) != 0 {
 		t.Errorf("git calls: ManifestCommits %d, ReadBlobs %d, OnFirstParentChain %d, want 0 each",
 			len(git.commitCalls), len(git.readCalls), len(git.chainCalls))
 	}
-	if len(ts.applied) != 0 || len(ts.listCalls) != 1 {
-		t.Errorf("store calls: ApplyTimeline %d, ListEvents %d, want 0 and 1 (stored events are checked against the current rules)", len(ts.applied), len(ts.listCalls))
+	if len(ts.applied) != 0 || len(ts.listCalls) != 0 {
+		t.Errorf("store calls: ApplyTimeline %d, ListEvents %d, want 0 each", len(ts.applied), len(ts.listCalls))
 	}
 	checkStats(t, got, map[string]int64{"targets": 1})
 }
@@ -574,6 +582,7 @@ func TestRun_RewrittenHistory(t *testing.T) {
 		Events:     []model.DepEvent{event(n1, "go.mod", a2, model.ChangeAdded, "")},
 		Intervals:  []model.DepInterval{interval("go.mod", a2, n1, nil)},
 		IndexedSHA: "n1",
+		Settings:   settingsFingerprint(TargetSettings{}),
 	}
 	if !reflect.DeepEqual(u, want) {
 		t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
@@ -622,6 +631,7 @@ func TestRun_Rebuild(t *testing.T) {
 				interval("go.mod", a2, c2, nil),
 			},
 			IndexedSHA: "c2",
+			Settings:   settingsFingerprint(TargetSettings{}),
 		}
 	}
 
@@ -668,38 +678,112 @@ func TestRun_Rebuild(t *testing.T) {
 	})
 }
 
-func TestRun_RetroactiveExclusion(t *testing.T) {
+func TestRun_SettingsChangedRebuilds(t *testing.T) {
 	t.Parallel()
 	c1 := commit("c1", 1, "go.mod", "examples/go.mod", "Dockerfile")
+	c2 := commit("c2", 2, "examples/go.mod")
 	a1 := fdep("pkg:golang/a", "golang", "v1.0.0")
 	b1 := fdep("pkg:golang/b", "golang", "v1.0.0")
+	b2 := fdep("pkg:golang/b", "golang", "v2.0.0")
 	img := fdep("pkg:docker/golang", "docker", "1.27")
+	// The events stored by a run without exclusions or allowlist at c1.
 	stored := []model.DepEvent{
 		event(c1, "Dockerfile", img, model.ChangeAdded, ""),
 		event(c1, "examples/go.mod", b1, model.ChangeAdded, ""),
 		event(c1, "go.mod", a1, model.ChangeAdded, ""),
 	}
+	plain := TargetSettings{Slug: "alpha"}
+	excluding := TargetSettings{Slug: "alpha", ExcludePaths: []string{"examples"}}
+	goOnly := TargetSettings{Slug: "alpha", Ecosystems: []string{"golang"}}
 
 	tests := []struct {
 		name          string
-		settings      TargetSettings
+		storedFP      string
+		current       TargetSettings
+		head          string
+		commits       []model.Commit // what ManifestCommits returns
+		wantReset     bool
+		wantFrom      string
+		wantList      int
+		wantChain     []string
 		wantIntervals []model.DepInterval
+		wantStats     map[string]int64
 	}{
 		{
-			name:     "path now excluded",
-			settings: TargetSettings{Slug: "alpha", ExcludePaths: []string{"examples"}},
+			name:      "exclusion added, head unchanged",
+			storedFP:  settingsFingerprint(plain),
+			current:   excluding,
+			head:      "c1",
+			commits:   []model.Commit{c1},
+			wantReset: true,
 			wantIntervals: []model.DepInterval{
 				interval("Dockerfile", img, c1, nil),
 				interval("go.mod", a1, c1, nil),
 			},
+			wantStats: map[string]int64{"targets": 1, "resets": 1, "commits_walked": 1, "files_read": 2,
+				"files_excluded": 1, "events_written": 2, "intervals": 2},
 		},
 		{
-			name:     "ecosystem removed from the allowlist",
-			settings: TargetSettings{Slug: "alpha", Ecosystems: []string{"golang"}},
+			name:      "exclusion removed, head moved",
+			storedFP:  settingsFingerprint(excluding),
+			current:   plain,
+			head:      "c2",
+			commits:   []model.Commit{c1, c2},
+			wantReset: true,
+			wantIntervals: []model.DepInterval{
+				interval("Dockerfile", img, c1, nil),
+				interval("go.mod", a1, c1, nil),
+				interval("examples/go.mod", b1, c1, &c2),
+				interval("examples/go.mod", b2, c2, nil),
+			},
+			wantStats: map[string]int64{"targets": 1, "resets": 1, "commits_walked": 2, "files_read": 4,
+				"events_written": 4, "intervals": 4},
+		},
+		{
+			name:      "allowlist added",
+			storedFP:  settingsFingerprint(plain),
+			current:   goOnly,
+			head:      "c1",
+			commits:   []model.Commit{c1},
+			wantReset: true,
 			wantIntervals: []model.DepInterval{
 				interval("go.mod", a1, c1, nil),
 				interval("examples/go.mod", b1, c1, nil),
 			},
+			wantStats: map[string]int64{"targets": 1, "resets": 1, "commits_walked": 1, "files_read": 3,
+				"events_written": 2, "intervals": 2},
+		},
+		{
+			name:      "equal settings, incremental",
+			storedFP:  settingsFingerprint(plain),
+			current:   plain,
+			head:      "c2",
+			commits:   []model.Commit{c2},
+			wantFrom:  "c1",
+			wantList:  1,
+			wantChain: []string{"c1..c2"},
+			wantIntervals: []model.DepInterval{
+				interval("Dockerfile", img, c1, nil),
+				interval("go.mod", a1, c1, nil),
+				interval("examples/go.mod", b1, c1, &c2),
+				interval("examples/go.mod", b2, c2, nil),
+			},
+			wantStats: map[string]int64{"targets": 1, "commits_walked": 1, "files_read": 1,
+				"events_written": 1, "intervals": 4},
+		},
+		{
+			name:     "empty stored, head unchanged: no reset, fingerprint written",
+			storedFP: "",
+			current:  plain,
+			head:     "c1",
+			wantFrom: "c1",
+			wantList: 1,
+			wantIntervals: []model.DepInterval{
+				interval("Dockerfile", img, c1, nil),
+				interval("go.mod", a1, c1, nil),
+				interval("examples/go.mod", b1, c1, nil),
+			},
+			wantStats: map[string]int64{"targets": 1, "intervals": 3},
 		},
 	}
 	for _, tt := range tests {
@@ -707,68 +791,59 @@ func TestRun_RetroactiveExclusion(t *testing.T) {
 			t.Parallel()
 			repo := testRepo(1, "alpha")
 			repo.LastIndexedSHA = "c1"
-			git := &fakeGit{heads: map[string]string{"alpha": "c1"}}
+			repo.TimelineSettings = tt.storedFP
+			git := &fakeGit{
+				heads:   map[string]string{"alpha": tt.head},
+				commits: map[string][]model.Commit{"alpha": tt.commits},
+			}
+			git.file(c1, "go.mod", "pkg:golang/a@v1.0.0")
+			git.file(c1, "examples/go.mod", "pkg:golang/b@v1.0.0")
+			git.file(c1, "Dockerfile", "pkg:docker/golang@1.27")
+			git.file(c2, "examples/go.mod", "pkg:golang/b@v2.0.0")
 			ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: slices.Clone(stored)}}
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
 				[]Extractor{goExtractor(), dockerExtractor()}, nil,
-				Options{Targets: []TargetSettings{tt.settings}}, discard())
+				Options{Targets: []TargetSettings{tt.current}}, logger)
 
 			got, err := s.Run(t.Context(), model.Scope{})
 			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
-			if len(git.commitCalls) != 0 || len(git.readCalls) != 0 || len(git.chainCalls) != 0 {
-				t.Errorf("git calls: ManifestCommits %d, ReadBlobs %d, OnFirstParentChain %d, want 0 each: the head did not move",
-					len(git.commitCalls), len(git.readCalls), len(git.chainCalls))
+			u := onlyApply(t, ts)
+			if u.Reset != tt.wantReset {
+				t.Errorf("Reset = %v, want %v", u.Reset, tt.wantReset)
 			}
-			want := model.TimelineUpdate{
-				RepoID:     1,
-				Commits:    []model.Commit{},
-				Manifests:  map[string]model.ManifestInfo{},
-				Intervals:  tt.wantIntervals,
-				IndexedSHA: "c1",
+			if want := settingsFingerprint(tt.current); u.Settings != want {
+				t.Errorf("Settings = %q, want %q", u.Settings, want)
 			}
-			if u := onlyApply(t, ts); !reflect.DeepEqual(u, want) {
-				t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
+			if u.IndexedSHA != tt.head {
+				t.Errorf("IndexedSHA = %q, want %q", u.IndexedSHA, tt.head)
 			}
-			checkStats(t, got, map[string]int64{"targets": 1, "intervals": 2})
+			if !reflect.DeepEqual(u.Intervals, tt.wantIntervals) {
+				t.Errorf("Intervals =\n%+v\nwant\n%+v", u.Intervals, tt.wantIntervals)
+			}
+			if len(ts.listCalls) != tt.wantList {
+				t.Errorf("ListEvents called %d times, want %d", len(ts.listCalls), tt.wantList)
+			}
+			if !reflect.DeepEqual(git.chainCalls, tt.wantChain) {
+				t.Errorf("OnFirstParentChain calls = %v, want %v", git.chainCalls, tt.wantChain)
+			}
+			if tt.commits != nil {
+				if len(git.commitCalls) != 1 || git.commitCalls[0].from != tt.wantFrom || git.commitCalls[0].to != tt.head {
+					t.Errorf("ManifestCommits calls = %+v, want one from %q to %q", git.commitCalls, tt.wantFrom, tt.head)
+				}
+			} else if len(git.commitCalls) != 0 {
+				t.Errorf("ManifestCommits calls = %+v, want none: the head did not move", git.commitCalls)
+			}
+			const msg = "timeline settings changed, rebuilding from root"
+			if logged := strings.Contains(logs.String(), msg) && strings.Contains(logs.String(), "repo=alpha"); logged != tt.wantReset {
+				t.Errorf("logs = %q, want the %q warning: %v", logs.String(), msg, tt.wantReset)
+			}
+			checkStats(t, got, tt.wantStats)
 		})
 	}
-
-	t.Run("filtered stored state is diffed against new commits", func(t *testing.T) {
-		t.Parallel()
-		c2 := commit("c2", 2, "go.mod", "Dockerfile")
-		repo := testRepo(1, "alpha")
-		repo.LastIndexedSHA = "c1"
-		git := &fakeGit{
-			heads:   map[string]string{"alpha": "c2"},
-			commits: map[string][]model.Commit{"alpha": {c2}},
-		}
-		git.file(c2, "go.mod", "pkg:golang/a@v1.1.0")
-		git.file(c2, "Dockerfile", "pkg:docker/golang@1.27")
-		ts := &fakeTimelineStore{events: map[int64][]model.DepEvent{1: slices.Clone(stored)}}
-		s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": repo}}, ts,
-			[]Extractor{goExtractor(), dockerExtractor()}, nil,
-			Options{Targets: []TargetSettings{{Slug: "alpha", Ecosystems: []string{"golang"}, ExcludePaths: []string{"examples"}}}}, discard())
-
-		if _, err := s.Run(t.Context(), model.Scope{}); err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-		u := onlyApply(t, ts)
-		a2 := fdep("pkg:golang/a", "golang", "v1.1.0")
-		// The Dockerfile is filtered out both as stored state and as new
-		// content, so it produces no removal and no addition.
-		if want := []model.DepEvent{event(c2, "go.mod", a2, model.ChangeChanged, "v1.0.0")}; !reflect.DeepEqual(u.Events, want) {
-			t.Errorf("Events = %+v, want %+v", u.Events, want)
-		}
-		wantIntervals := []model.DepInterval{
-			interval("go.mod", a1, c1, &c2),
-			interval("go.mod", a2, c2, nil),
-		}
-		if !reflect.DeepEqual(u.Intervals, wantIntervals) {
-			t.Errorf("Intervals = %+v, want %+v", u.Intervals, wantIntervals)
-		}
-	})
 }
 
 func TestRun_ChainCheckErrorFailsTarget(t *testing.T) {

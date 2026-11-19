@@ -68,9 +68,11 @@ func scanFinding(s scanner) (model.Finding, error) {
 
 // UpsertFinding inserts f, keyed by f.Fingerprint, with first-seen and
 // last-changed times taken from f.LastChangedAt and a finding_state row in
-// state open. If the fingerprint exists it updates score, rank reason and
-// last-changed time, clears the resolved time, and leaves the first-seen time,
-// the digest time and the state row alone. Zero ID fields are stored as NULL.
+// state open. If the fingerprint exists it updates the dep_version link (so a
+// finding whose interval was deleted is relinked), score, rank reason and
+// last-changed time, clears the resolved time, and leaves the other links, the
+// first-seen time, the digest time and the state row alone. Zero ID fields are
+// stored as NULL.
 // It returns the stored finding with its state.
 func (db *DB) UpsertFinding(ctx context.Context, f model.Finding) (model.Finding, error) {
 	var stored model.Finding
@@ -84,6 +86,7 @@ func (db *DB) UpsertFinding(ctx context.Context, f model.Finding) (model.Finding
 				created_ts, updated_ts)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (fingerprint) DO UPDATE SET
+				dep_version_id = excluded.dep_version_id,
 				score = excluded.score,
 				rank_reason = excluded.rank_reason,
 				last_changed_ts = excluded.last_changed_ts,

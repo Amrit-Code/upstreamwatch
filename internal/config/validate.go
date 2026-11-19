@@ -33,7 +33,7 @@ func (c Config) validate() []error {
 	}
 	if c.HTTP.BaseURL != "" {
 		u, err := url.Parse(c.HTTP.BaseURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 			add("http.base_url: must be an absolute http or https URL")
 		}
 	}

@@ -24,7 +24,9 @@ var styleCSS []byte
 // asset: the UI is plain HTML forms and one same-origin stylesheet.
 const contentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'"
 
-const shutdownTimeout = 10 * time.Second
+// defaultShutdownTimeout is how long Serve lets in-flight requests finish
+// before it closes their connections.
+const defaultShutdownTimeout = 10 * time.Second
 
 // Options configures the web server.
 type Options struct {
@@ -33,20 +35,26 @@ type Options struct {
 }
 
 // Server is the web UI: the findings page, the health endpoint and the
-// stylesheet, behind the security-header middleware and the cross-origin
-// check.
+// stylesheet, behind the security-header middleware, the host check and the
+// cross-origin check.
 type Server struct {
 	health   HealthReader
 	findings FindingsReader
 	opts     Options
 	logger   *slog.Logger
 	pages    map[string]*template.Template
+	inner    http.Handler // the mux behind the cross-origin check
 	handler  http.Handler
+
+	shutdownTimeout time.Duration // defaultShutdownTimeout; tests shorten it
 }
 
-// NewServer parses every embedded template and builds the handler. It returns
-// an error when a template fails to parse or BaseURL is not an absolute http
-// or https URL. It does not listen.
+// NewServer parses every embedded template and builds the handler. Requests
+// are answered only for the hosts Options names: the Listen address (the
+// loopback names instead when its host is unspecified, plus localhost when it
+// is a loopback address) and the host of BaseURL. It returns an error when a
+// template fails to parse or BaseURL is not an absolute http or https URL. It
+// does not listen.
 func NewServer(health HealthReader, findings FindingsReader, opts Options, logger *slog.Logger) (*Server, error) {
 	pages, err := parsePages(templateFS)
 	if err != nil {
@@ -58,6 +66,8 @@ func NewServer(health HealthReader, findings FindingsReader, opts Options, logge
 		opts:     opts,
 		logger:   logger,
 		pages:    pages,
+
+		shutdownTimeout: defaultShutdownTimeout,
 	}
 
 	mux := http.NewServeMux()
@@ -75,23 +85,41 @@ func NewServer(health HealthReader, findings FindingsReader, opts Options, logge
 			return nil, fmt.Errorf("trust base url origin: %w", err)
 		}
 	}
-	s.handler = securityHeaders(cop.Handler(mux))
+	s.inner = cop.Handler(mux)
+	s.handler = s.withHostCheck(allowedHosts(opts.Listen, opts.BaseURL))
 	return s, nil
 }
 
-// Handler returns the server's full handler, middleware included.
+// withHostCheck wraps the inner handler in the host check for allowed and in
+// the security headers, which the host check's rejections carry too.
+func (s *Server) withHostCheck(allowed map[string]struct{}) http.Handler {
+	return securityHeaders(hostCheck(allowed, s.logger, s.inner))
+}
+
+// Handler returns the server's full handler, middleware included. Its host
+// check allows the hosts Options names as given, so with a Listen port of 0
+// it allows port 0, not the port Serve would listen on.
 func (s *Server) Handler() http.Handler { return s.handler }
 
 // Serve listens on Options.Listen and serves until ctx is cancelled, then
-// shuts down, giving in-flight requests up to 10 seconds to finish.
+// shuts down, giving in-flight requests up to 10 seconds to finish. Requests
+// still running after that, or when serving fails, have their connections
+// closed, so no handler outlives Serve; the shutdown error is still
+// returned. With a
+// Listen port of 0 the allowed hosts are built from the address actually
+// listened on, before the first request is served.
 func (s *Server) Serve(ctx context.Context) error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.opts.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.opts.Listen, err)
 	}
+	handler := s.handler
+	if _, port, err := net.SplitHostPort(s.opts.Listen); err == nil && port == "0" {
+		handler = s.withHostCheck(allowedHosts(ln.Addr().String(), s.opts.BaseURL))
+	}
 	srv := &http.Server{
-		Handler:           s.handler,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -107,13 +135,25 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	select {
 	case err := <-serveErr:
+		// Requests already accepted may still be running; drop them so no
+		// handler outlives Serve.
+		if closeErr := srv.Close(); closeErr != nil {
+			return errors.Join(fmt.Errorf("serve http: %w", err), fmt.Errorf("close http server: %w", closeErr))
+		}
 		return fmt.Errorf("serve http: %w", err)
 	case <-ctx.Done():
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
 	defer cancel()
 	shutdownErr := srv.Shutdown(shutdownCtx)
+	if shutdownErr != nil {
+		// Shutdown gave up waiting (its deadline passed): close the
+		// connections still active, which cancels their request contexts.
+		if closeErr := srv.Close(); closeErr != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close http server: %w", closeErr))
+		}
+	}
 	// Serve returns ErrServerClosed as soon as Shutdown starts, so this
 	// receive does not wait for in-flight requests.
 	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -151,7 +191,7 @@ func parsePages(fsys fs.FS) (map[string]*template.Template, error) {
 // URL.
 func baseOrigin(baseURL string) (string, error) {
 	u, err := url.Parse(baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return "", errors.New("base url: must be an absolute http or https URL")
 	}
 	return u.Scheme + "://" + u.Host, nil

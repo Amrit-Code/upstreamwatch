@@ -42,14 +42,19 @@ const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma
 
 // Open opens the SQLite file at path with WAL, a 5 s busy timeout, foreign keys
 // on, and IMMEDIATE write transactions. A missing parent directory is created
-// with mode 0700 and a missing database file with mode 0600. Open does not
+// with mode 0700, an existing one that group or others can access is set to
+// 0700, and a missing database file is created with mode 0600. Open does not
 // migrate; call Migrate.
 func Open(ctx context.Context, path string, logger *slog.Logger) (*DB, error) {
 	if path == "" || strings.ContainsRune(path, '?') || strings.HasPrefix(path, "file:") {
 		return nil, fmt.Errorf("open store: unsupported database path %q", path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("open store: create directory: %w", err)
+	}
+	if err := tightenDir(dir); err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
 	}
 	// SQLite would create the file with mode 0644; creating it first fixes the
 	// mode, and SQLite gives the -wal and -shm files the database file's mode.
@@ -82,6 +87,22 @@ func Open(ctx context.Context, path string, logger *slog.Logger) (*DB, error) {
 		return nil, errors.Join(fmt.Errorf("open store: pragmas not applied (journal_mode=%s, foreign_keys=%d)", journal, fk), pool.Close())
 	}
 	return &DB{pool: pool, q: pool, now: time.Now, logger: logger}, nil
+}
+
+// tightenDir sets dir to mode 0700 when it grants any permission to group or
+// others, and leaves a 0700 or stricter directory alone.
+func tightenDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat data directory %s: %w", dir, err)
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("data directory %s must not be accessible to group or others: %w", dir, err)
+	}
+	return nil
 }
 
 // Close closes the connection pool. Methods called afterwards return an error.

@@ -321,7 +321,7 @@ type outcome struct {
 	header      http.Header
 	body        []byte
 	finalURL    string
-	conditional bool // the request carried If-None-Match or If-Modified-Since
+	conditional bool // the final request, after redirects, carried If-None-Match or If-Modified-Since
 }
 
 // attempt sends the request once, through the host's pacing gate, and reads
@@ -351,7 +351,6 @@ func (c *Client) attempt(ctx context.Context, tgt target, u *url.URL, req Reques
 	for k, vs := range cond {
 		hreq.Header[k] = vs
 	}
-	conditional := hreq.Header.Get("If-None-Match") != "" || hreq.Header.Get("If-Modified-Since") != ""
 
 	start := c.now()
 	resp, err := c.client.Do(hreq)
@@ -365,11 +364,15 @@ func (c *Client) attempt(ctx context.Context, tgt target, u *url.URL, req Reques
 	}
 	defer resp.Body.Close()
 
+	// Judge from the request that got this response, after redirects: a
+	// cross-host hop carries no validators, so a 304 to it is not an answer
+	// to a conditional request.
+	sent := resp.Request.Header
 	out := outcome{
 		status:      resp.StatusCode,
 		header:      resp.Header,
 		finalURL:    resp.Request.URL.String(),
-		conditional: conditional,
+		conditional: sent.Get("If-None-Match") != "" || sent.Get("If-Modified-Since") != "",
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		out.body, err = readCapped(resp.Body, maxBody)

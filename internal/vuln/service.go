@@ -96,7 +96,8 @@ func (s *Service) Name() string { return jobName }
 // repos in scope. With scope.RepoSlug set, querying, matching and findings
 // cover that repo only, while the deltas and signals, which are global, still
 // run; a slug with no stored interval is an error wrapping model.ErrNotFound.
-// A store failure or a failed query batch stops the run. A failed record
+// The newly queried pairs are recorded as queried only when every advisory
+// the query batch named was fetched or found missing. A store failure or a failed query batch stops the run. A failed record
 // fetch, delta download or signal refresh is logged and the run continues
 // through matching and findings, then returns those errors joined, redacted.
 // When ctx is done Run stops before the next unit of work and returns ctx's
@@ -132,7 +133,7 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 	stats["intervals"] = int64(len(inScope))
 
 	var collected []error
-	queryRefs, err := s.queryNew(ctx, inScope, now, stats)
+	newPairs, queryRefs, err := s.queryNew(ctx, inScope, stats)
 	if err != nil {
 		return stats, err
 	}
@@ -146,6 +147,13 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 		return stats, err
 	}
 	collected = append(collected, errs...)
+	// A failed fetch of a query-batch ref leaves this run's pairs unmarked,
+	// so the next run queries them again and retries the fetch.
+	if len(newPairs) > 0 && !slices.ContainsFunc(queryRefs, func(r model.AdvisoryRef) bool { return failed[r.ID] }) {
+		if err := s.store.MarkQueried(ctx, newPairs, now); err != nil {
+			return stats, fmt.Errorf("mark %d package versions queried: %w", len(newPairs), err)
+		}
+	}
 	if err := s.advanceCursors(ctx, deltas, failed); err != nil {
 		return stats, err
 	}
@@ -177,9 +185,10 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 	return stats, nil
 }
 
-// queryNew sends the in-scope pairs never queried before to QueryBatch,
-// records them as queried, and returns the refs it gave.
-func (s *Service) queryNew(ctx context.Context, inScope []model.RepoInterval, now time.Time, stats model.Stats) ([]model.AdvisoryRef, error) {
+// queryNew sends the in-scope pairs never queried before to QueryBatch and
+// returns those pairs and the refs it gave. Marking the pairs queried is left
+// to the caller, after the refs are fetched.
+func (s *Service) queryNew(ctx context.Context, inScope []model.RepoInterval, stats model.Stats) ([]model.PackageVersion, []model.AdvisoryRef, error) {
 	seen := map[model.PackageVersion]bool{}
 	var pairs []model.PackageVersion
 	for _, ri := range inScope {
@@ -198,11 +207,11 @@ func (s *Service) queryNew(ctx context.Context, inScope []model.RepoInterval, no
 		}
 	}
 	if len(pairs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	queried, err := s.store.QueriedVersions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list queried versions: %w", err)
+		return nil, nil, fmt.Errorf("list queried versions: %w", err)
 	}
 	for _, pv := range queried {
 		delete(seen, pv)
@@ -211,20 +220,17 @@ func (s *Service) queryNew(ctx context.Context, inScope []model.RepoInterval, no
 	slices.SortFunc(pairs, comparePairs)
 	stats["pairs_new"] = int64(len(pairs))
 	if len(pairs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	refs, err := s.src.QueryBatch(ctx, pairs)
 	if err != nil {
-		return nil, fmt.Errorf("query advisories for %d package versions: %w", len(pairs), err)
+		return nil, nil, fmt.Errorf("query advisories for %d package versions: %w", len(pairs), err)
 	}
 	stats["query_refs"] = int64(len(refs))
-	if err := s.store.MarkQueried(ctx, pairs, now); err != nil {
-		return nil, fmt.Errorf("mark %d package versions queried: %w", len(pairs), err)
-	}
-	return refs, nil
+	return pairs, refs, nil
 }
 
 // comparePairs orders package versions by package URL, then version.

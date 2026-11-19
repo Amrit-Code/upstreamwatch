@@ -564,6 +564,62 @@ func TestRun_FetchErrorsCollected(t *testing.T) {
 	})
 }
 
+func TestRun_QueryRefFetchRetried(t *testing.T) {
+	t.Parallel()
+
+	t.Run("transient fetch error", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, nil, nil, vuln.Options{})
+		fetchErr := errors.New("GET /v1/vulns: status 503")
+		h.src.fetchErr[advLib] = fetchErr
+		if _, err := h.svc.Run(t.Context(), model.Scope{}); !errors.Is(err, fetchErr) {
+			t.Fatalf("first Run() error = %v, want it to wrap %v", err, fetchErr)
+		}
+		if len(h.store.queried) != 0 {
+			t.Errorf("queried pairs after a failed query-ref fetch = %v, want none", h.store.queried)
+		}
+
+		h.src.resetCalls()
+		delete(h.src.fetchErr, advLib)
+		h.now = runAt.Add(6 * time.Hour)
+		stats := h.run(t, model.Scope{})
+		want := [][]model.PackageVersion{{
+			{PURL: libPURL, Version: "v1.2.0"},
+			{PURL: libPURL, Version: "v1.3.0"},
+			{PURL: toolPURL, Version: "1.26"},
+		}}
+		if !reflect.DeepEqual(h.src.queryCalls, want) {
+			t.Errorf("second run QueryBatch calls = %v, want %v", h.src.queryCalls, want)
+		}
+		if want := []string{advLib}; !reflect.DeepEqual(h.src.fetchCalls, want) {
+			t.Errorf("second run Fetch calls = %v, want %v (the others are stored)", h.src.fetchCalls, want)
+		}
+		if _, ok := h.store.advisories[advLib]; !ok {
+			t.Errorf("%s not saved on the retry", advLib)
+		}
+		if len(h.store.queried) != 3 {
+			t.Errorf("queried pairs after the retry = %v, want the 3 sent", h.store.queried)
+		}
+		for pv, ts := range h.store.queried {
+			if !ts.Equal(h.now) {
+				t.Errorf("queried %v at %v, want %v", pv, ts, h.now)
+			}
+		}
+		checkStats(t, stats, map[string]int64{"pairs_new": 3, "fetched": 1, "findings_upserted": 5})
+	})
+
+	t.Run("not found counts as fetched", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, nil, nil, vuln.Options{})
+		delete(h.src.records, advLib)
+		stats := h.run(t, model.Scope{})
+		if len(h.store.queried) != 3 {
+			t.Errorf("queried pairs = %v, want the 3 sent", h.store.queried)
+		}
+		checkStats(t, stats, map[string]int64{"fetch_not_found": 1, "fetched": 2})
+	})
+}
+
 func TestRun_StopsOnStoreAndQueryFailures(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("boom")

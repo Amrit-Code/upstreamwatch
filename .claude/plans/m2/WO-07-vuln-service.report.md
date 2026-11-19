@@ -97,3 +97,46 @@ Outside scope:
 Concerns:
 - Requirement 2 marks new pairs as queried as soon as QueryBatch succeeds. If fetching one of the refs that batch returned then fails with a transient error (not not-found), that advisory is never retried: the pair is not queried again, and the delta lists the id only if OSV modifies the record after the cursor. The run returns an error that time, but the advisory can stay missing for good. Two possible fixes: call MarkQueried only when every query-ref fetch succeeded, or keep the failed ids in kv and retry them on the next run. I followed the work order as written.
 - The unknown-slug rule above means `upw run vulns --repo <slug>` for a repo that exists but has no intervals yet returns not found, not an empty run.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-07-vuln-service.md (rulings 1 and 2 from the lead)
+Files changed:
+- internal/vuln/service.go (modified)
+- internal/vuln/service_test.go (modified)
+- .claude/plans/m2/WO-07-vuln-service.report.md (modified: this section)
+
+Commands run:
+- `go test -race -count=1 ./internal/vuln/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.393s
+- Check that the new test fails without the fix: I changed the guard to mark pairs regardless of failed fetches and ran `go test -race -count=1 -run TestRun_QueryRefFetchRetried ./internal/vuln/` -> exit 1
+  service_test.go:608: stats["findings_upserted"] = 3, want 5
+  service_test.go:608: stats["pairs_new"] = 0, want 3
+  service_test.go:608: stats["fetched"] = 0, want 1
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/vuln	0.293s
+  The file was then restored from a copy; the guard reads `if len(newPairs) > 0 && !slices.ContainsFunc(queryRefs, ...)`.
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.257s
+  (every other package ok or [no test files], as in the first round)
+  ==> arch-lint
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=1 -run 'TestRun' ./internal/vuln/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.257s
+- `git status --porcelain` -> exit 0
+   M internal/vuln/service.go
+   M internal/vuln/service_test.go
+  (plus this report once it was appended)
+
+Changes:
+- Ruling 1: `queryNew` no longer calls MarkQueried. It returns the new pairs together with the query refs. After the fetch phase, `Run` marks those pairs queried at now, but only when no query-batch ref is among the ids whose fetch failed. A not-found result is counted and does not count as a failure. If any query-ref fetch failed, none of this run's new pairs are marked, so the next run queries them again and retries the fetch. A MarkQueried failure still stops the run. The `Run` doc comment says this.
+- Ruling 2: no change. An in-scope slug with no stored intervals is still an error wrapping model.ErrNotFound.
+- New test `TestRun_QueryRefFetchRetried`:
+  - "transient fetch error": run 1 fails with a fetch error and leaves every pair unmarked. Run 2 sends the same 3 pairs to QueryBatch again, fetches only the missing advisory, saves it, and marks the 3 pairs at run 2's time.
+  - "not found counts as fetched": a query ref whose record is missing still lets the pairs be marked.
+
+Decisions: none new.
+Outside scope: none new.
+Concerns: none. First-round concern 1 is fixed by ruling 1, and concern 2 is settled by ruling 2.

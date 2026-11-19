@@ -90,4 +90,4 @@ Follow the report contract in your agent definition: full report to the report f
 
 ## Rulings
 
-None.
+2026-11-19: Requirement 6 stands: `packages-lock.json` records `depth`, so depth 0 is `DirectYes`, above 0 `DirectNo`, absent `DirectUnknown`. The lockfile line in `docs/decisions.md` was too broad and now names only `uv.lock` and `poetry.lock`. Keep the code and tests as they are.

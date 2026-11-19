@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -451,14 +452,19 @@ func TestSync_RelativeDirectories(t *testing.T) {
 	}
 }
 
-func TestSync_IncrementalCapKeepsHead(t *testing.T) {
+// TestSync_IncrementalCapRemovesObjects rejects a later fetch for the size
+// cap. Whether the size watch stopped git mid-transfer (the clone is pruned
+// and kept) or the fetch finished first (the kept pack cannot be pruned, so
+// the clone is removed) depends on timing; both outcomes are checked.
+func TestSync_IncrementalCapRemovesObjects(t *testing.T) {
 	t.Parallel()
 	up := gitrepo.New(t, "main")
 	up.Write("go.mod", "module example.com/app\n")
 	first := up.Commit("first", day(1))
 
 	opts := testOptions(t)
-	res, err := gitsrc.New(opts, discard()).Sync(t.Context(), model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"})
+	repo := model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"}
+	res, err := gitsrc.New(opts, discard()).Sync(t.Context(), repo)
 	if err != nil {
 		t.Fatalf("first Sync() error = %v", err)
 	}
@@ -466,19 +472,110 @@ func TestSync_IncrementalCapKeepsHead(t *testing.T) {
 	blob := make([]byte, 2<<20)
 	rand.NewChaCha8([32]byte{3}).Read(blob)
 	up.WriteBytes("blob.bin", blob)
-	up.Commit("large file", day(2))
+	second := up.Commit("large file", day(2))
 
 	// A cap with room for the clone as it is, but not for the new commit.
-	opts.MaxCloneBytes = treeSize(t, res.ClonePath) + 256<<10
-	_, err = gitsrc.New(opts, discard()).Sync(t.Context(), model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"})
-	if err == nil || !strings.Contains(err.Error(), "size cap") {
+	before := treeSize(t, res.ClonePath)
+	opts.MaxCloneBytes = before + 256<<10
+	_, err = gitsrc.New(opts, discard()).Sync(t.Context(), repo)
+	if err == nil || !strings.Contains(err.Error(), "clone exceeded the") {
 		t.Fatalf("second Sync() error = %v, want the size cap error", err)
 	}
-	if got := gitrepo.Git(t, res.ClonePath, "rev-parse", "refs/heads/main"); got != first {
-		t.Errorf("clone's main after an over-cap fetch = %s, want the previous head %s", got, first)
+	if _, statErr := os.Stat(res.ClonePath); errors.Is(statErr, fs.ErrNotExist) {
+		if !strings.Contains(err.Error(), "clone removed") {
+			t.Errorf("clone is gone but the error does not say so: %v", err)
+		}
+	} else {
+		if strings.Contains(err.Error(), "clone removed") {
+			t.Errorf("error says the clone was removed, but it exists: %v", err)
+		}
+		if got := gitrepo.Git(t, res.ClonePath, "rev-parse", "refs/heads/main"); got != first {
+			t.Errorf("clone's main after an over-cap fetch = %s, want the previous head %s", got, first)
+		}
+		if refs := gitrepo.Git(t, res.ClonePath, "for-each-ref", "refs/upw/"); refs != "" {
+			t.Errorf("staging refs left after a failed fetch:\n%s", refs)
+		}
+		if after, slack := treeSize(t, res.ClonePath), int64(64<<10); after > before+slack {
+			t.Errorf("clone size after a rejected fetch = %d, want at most %d (before %d plus slack)", after, before+slack, before)
+		}
 	}
-	if refs := gitrepo.Git(t, res.ClonePath, "for-each-ref", "refs/upw/"); refs != "" {
-		t.Errorf("staging refs left after a failed fetch:\n%s", refs)
+
+	opts.MaxCloneBytes = 0 // the default, far above this fixture
+	got, err := gitsrc.New(opts, discard()).Sync(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("Sync() with a large enough cap error = %v", err)
+	}
+	if got.Head != second || got.ClonePath != res.ClonePath {
+		t.Errorf("Sync() with a large enough cap = %+v, want Head %s at %s", got, second, res.ClonePath)
+	}
+}
+
+// fakeGitPath puts a stand-in git first on PATH that records its process ID
+// and arguments, one invocation per line, and then runs the real git. It
+// returns the files it records to. Tests that call it cannot run in
+// parallel.
+func fakeGitPath(t *testing.T) (pidFile, argsFile string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	bin := t.TempDir()
+	pidFile = filepath.Join(bin, "pids")
+	argsFile = filepath.Join(bin, "args")
+	script := "#!/bin/sh\n" +
+		"echo $$ >> '" + pidFile + "'\n" +
+		"printf '%s\\n' \"$*\" >> '" + argsFile + "'\n" +
+		"exec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return pidFile, argsFile
+}
+
+func TestSync_FetchKeepsPacks(t *testing.T) {
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", "module example.com/app\n")
+	up.Commit("first", day(1))
+	_, argsFile := fakeGitPath(t)
+
+	g := gitsrc.New(testOptions(t), discard())
+	repo := model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"}
+	res, err := g.Sync(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("first Sync() error = %v", err)
+	}
+	for i := range 5 {
+		up.Write("go.mod", "module example.com/app\n\ngo 1.2"+string(rune('0'+i))+"\n")
+		up.Commit("bump", day(2+i))
+	}
+	if _, err := g.Sync(t.Context(), repo); err != nil {
+		t.Fatalf("second Sync() error = %v", err)
+	}
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetches := 0
+	for line := range strings.Lines(string(data)) {
+		if !strings.Contains(line, " fetch ") {
+			continue
+		}
+		fetches++
+		for _, want := range []string{"-c fetch.unpackLimit=1", "-c transfer.unpackLimit=1"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("fetch invocation lacks %q: %s", want, line)
+			}
+		}
+	}
+	if fetches != 2 {
+		t.Errorf("recorded %d fetch invocations, want 2 (first and later sync)", fetches)
+	}
+	// A received pack is kept whole, so no loose objects appear.
+	if counts := gitrepo.Git(t, res.ClonePath, "count-objects", "-v"); !strings.Contains(counts, "count: 0\n") {
+		t.Errorf("clone has loose objects after fetches:\n%s", counts)
 	}
 }
 

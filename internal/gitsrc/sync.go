@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +19,14 @@ import (
 
 // sizeCheckInterval is how often a running fetch's clone directory is
 // measured against the size cap.
-const sizeCheckInterval = time.Second
+const sizeCheckInterval = 250 * time.Millisecond
+
+// fetchConfig is the per-invocation config every fetch adds. With both
+// unpack limits at 1, a received pack is kept as one pack file instead of
+// being exploded into loose objects, so a small, highly deltified pack
+// cannot multiply on disk and a rejected fetch leaves one file to account
+// for.
+var fetchConfig = []string{"fetch.unpackLimit=1", "transfer.unpackLimit=1"}
 
 // slugPattern is what a slug must look like before it becomes a path, so
 // "../" can never appear.
@@ -83,6 +90,9 @@ func (g *CLI) Sync(ctx context.Context, repo model.TargetRepo) (model.SyncResult
 		err := g.fetch(fctx, repo, dir, branch)
 		cancel()
 		if err != nil {
+			if _, over := errors.AsType[*capExceededError](err); over {
+				err = g.shrinkAfterCap(ctx, dir, err)
+			}
 			return model.SyncResult{}, fmt.Errorf("sync %s: %w", repo.Slug, err)
 		}
 	}
@@ -136,7 +146,8 @@ const cleanupTimeout = 30 * time.Second
 // URL and host first. The fetch writes the staging ref; refs/heads/<branch>
 // moves to it only after the fetch succeeded and the clone is within the
 // size cap. On failure the staging ref is deleted and the branch is left as
-// it was; objects the fetch wrote stay until git collects them.
+// it was. For a later fetch rejected for the size cap, Sync then removes the
+// objects it wrote (shrinkAfterCap); other failures leave them in place.
 func (g *CLI) fetch(ctx context.Context, repo model.TargetRepo, dir, branch string) error {
 	if err := g.fetchStaging(ctx, repo, dir, branch); err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -207,7 +218,7 @@ func (g *CLI) fetchStaging(ctx context.Context, repo model.TargetRepo, dir, bran
 	refspec := "+refs/heads/" + branch + ":" + stagingRef(branch)
 	runErr := g.run(fctx, invocation{
 		gitDir:  dir,
-		config:  rem.config,
+		config:  slices.Concat(fetchConfig, rem.config),
 		env:     rem.env,
 		secrets: rem.secrets,
 		args:    []string{"fetch", "--no-tags", "--end-of-options", rem.url, refspec},
@@ -233,8 +244,44 @@ func (g *CLI) fetchStaging(ctx context.Context, repo model.TargetRepo, dir, bran
 
 // capError reports a clone that grew past MaxCloneBytes.
 func (g *CLI) capError() error {
-	mib := strconv.FormatFloat(float64(g.opts.MaxCloneBytes)/(1<<20), 'f', -1, 64)
-	return fmt.Errorf("clone exceeded the %s MiB size cap", mib)
+	return &capExceededError{mib: formatMiB(g.opts.MaxCloneBytes)}
+}
+
+// capExceededError is a fetch rejected because the clone grew past the size
+// cap, told apart from other fetch failures so Sync can shrink the clone.
+type capExceededError struct {
+	mib string
+}
+
+func (e *capExceededError) Error() string {
+	return "clone exceeded the " + e.mib + " MiB size cap"
+}
+
+// shrinkAfterCap runs after a later fetch into the existing clone at dir was
+// rejected with capErr and its staging ref deleted. It prunes the objects the
+// fetch left unreferenced and measures the clone again; a clone still above
+// the cap, or one that cannot be measured, is removed so the next sync starts
+// from scratch instead of downloading into it again. The branch ref is not
+// touched. The returned error always carries capErr.
+func (g *CLI) shrinkAfterCap(ctx context.Context, dir string, capErr error) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+
+	err := capErr
+	if pruneErr := g.run(cctx, invocation{gitDir: dir, args: []string{"prune", "--expire=now"}}); pruneErr != nil {
+		err = errors.Join(err, fmt.Errorf("prune rejected objects: %w", pruneErr))
+	}
+	size, sizeErr := dirSize(dir)
+	if sizeErr == nil && size <= g.opts.MaxCloneBytes {
+		return err
+	}
+	if sizeErr != nil {
+		err = errors.Join(err, fmt.Errorf("measure clone: %w", sizeErr))
+	}
+	if rmErr := os.RemoveAll(dir); rmErr != nil {
+		return errors.Join(err, fmt.Errorf("remove over-cap clone: %w", rmErr))
+	}
+	return fmt.Errorf("%w; clone removed, the next sync creates it again", err)
 }
 
 // remoteDefaultBranch asks the remote for the branch its HEAD points at.

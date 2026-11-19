@@ -1,8 +1,14 @@
 package gitsrc_test
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/gitsrc"
@@ -146,6 +152,111 @@ func TestManifestCommits_Errors(t *testing.T) {
 	}
 }
 
+// TestManifestCommits_LogCap runs ManifestCommits on a history whose log
+// output is far larger than both MaxLogBytes and a pipe buffer, so git is
+// still writing when the cap trips and must be killed.
+func TestManifestCommits_LogCap(t *testing.T) {
+	up := gitrepo.New(t, "main")
+	var head string
+	for c := range 3 {
+		for i := range 1000 {
+			up.Write(fmt.Sprintf("services/a-fairly-long-service-directory-name-%04d/go.mod", i),
+				fmt.Sprintf("module example.com/svc%d\n\ngo 1.2%d\n", i, c))
+		}
+		head = up.Commit(fmt.Sprintf("bump %d", c), day(1+c))
+	}
+	opts := testOptions(t)
+	g, repo := syncFixture(t, up, opts)
+
+	// With the default cap the same history reads, so the cap below is what
+	// fails the call.
+	all, err := g.ManifestCommits(t.Context(), repo, "", head, manifestPatterns)
+	if err != nil || len(all) != 3 || len(all[2].Paths) != 1000 {
+		t.Fatalf("ManifestCommits(default cap) = %d commits, %v, want 3 commits of 1000 paths", len(all), err)
+	}
+
+	pidFile, _ := fakeGitPath(t)
+	opts.MaxLogBytes = 16 << 10
+	capped := gitsrc.New(opts, discard())
+	goroutines := runtime.NumGoroutine()
+	got, err := capped.ManifestCommits(t.Context(), repo, "", head, manifestPatterns)
+	if err == nil || !strings.Contains(err.Error(), "git log output exceeded the 0.015625 MiB limit") {
+		t.Fatalf("ManifestCommits(16 KiB cap) = %d commits, %v, want the log cap error", len(got), err)
+	}
+	if got != nil {
+		t.Errorf("ManifestCommits(16 KiB cap) commits = %v on error, want nil", got)
+	}
+
+	// Every git process the call started has been waited for.
+	pids, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read recorded pids: %v", err)
+	}
+	if len(strings.Fields(string(pids))) == 0 {
+		t.Fatal("no git process recorded; the stand-in git was not used")
+	}
+	for _, field := range strings.Fields(string(pids)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("recorded pid %q: %v", field, err)
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("git process %d still exists after ManifestCommits returned (kill -0: %v)", pid, err)
+		}
+	}
+	// The goroutines os/exec started have ended; one that is exiting may
+	// still be counted for a moment, so yield before deciding.
+	for range 1000 {
+		if runtime.NumGoroutine() <= goroutines {
+			break
+		}
+		runtime.Gosched()
+	}
+	if n := runtime.NumGoroutine(); n > goroutines {
+		t.Errorf("goroutines after ManifestCommits = %d, want at most %d", n, goroutines)
+	}
+}
+
+// TestIsAncestor_PrunedAfterForcePush force-moves the branch to an unrelated
+// history, syncs, and drops the old commits from the clone, as git's gc
+// would. The old head is then not an ancestor of the new one, without an
+// error, so the timeline can rebuild instead of failing every run.
+func TestIsAncestor_PrunedAfterForcePush(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", "module example.com/app\n")
+	old := up.Commit("old history", day(1))
+	g, repo := syncFixture(t, up, testOptions(t))
+
+	up.Git("checkout", "--quiet", "--orphan", "rewrite")
+	up.Write("go.mod", "module example.com/rewritten\n")
+	newHead := up.Commit("unrelated history", day(2))
+	up.Git("branch", "-M", "rewrite", "main")
+
+	res, err := g.Sync(t.Context(), model.TargetRepo{Slug: "fixture", URL: up.URL(), Branch: "main"})
+	if err != nil || res.Head != newHead {
+		t.Fatalf("Sync() after force-push = %+v, %v, want Head %s", res, err, newHead)
+	}
+	gitrepo.Git(t, repo.ClonePath, "repack", "-a", "-d", "--quiet")
+	gitrepo.Git(t, repo.ClonePath, "prune", "--expire=now")
+	if objects := gitrepo.Git(t, repo.ClonePath, "cat-file", "--batch-all-objects", "--batch-check"); strings.Contains(objects, old) {
+		t.Fatalf("old commit %s still in the clone after repack and prune:\n%s", old, objects)
+	}
+
+	got, err := g.IsAncestor(t.Context(), repo, old, newHead)
+	if err != nil || got {
+		t.Errorf("IsAncestor(pruned old head, new head) = %v, %v, want false, nil", got, err)
+	}
+	if _, err := g.IsAncestor(t.Context(), repo, newHead, old); err == nil {
+		t.Error("IsAncestor(new head, pruned commit) = nil error, want an error")
+	}
+	missing := repo
+	missing.ClonePath = t.TempDir() + "/nope.git"
+	if _, err := g.IsAncestor(t.Context(), missing, old, newHead); err == nil || !strings.Contains(err.Error(), "clone missing") {
+		t.Errorf("IsAncestor(missing clone) error = %v, want clone missing", err)
+	}
+}
+
 func TestHeadAndIsAncestor(t *testing.T) {
 	t.Parallel()
 	up := gitrepo.New(t, "main")
@@ -187,9 +298,16 @@ func TestHeadAndIsAncestor(t *testing.T) {
 			t.Errorf("IsAncestor(%s) = %v, %v, want %v", tt.name, got, err, tt.want)
 		}
 	}
-	// The side branch was never fetched, so its commit is unknown here.
-	if _, err := g.IsAncestor(t.Context(), repo, side, second); err == nil {
+	// The side branch was never fetched, so its commit is unknown here: as
+	// an ancestor it is simply not one; as the descendant it is an error.
+	if ok, err := g.IsAncestor(t.Context(), repo, side, second); err != nil || ok {
+		t.Errorf("IsAncestor(unknown ancestor) = %v, %v, want false, nil", ok, err)
+	}
+	if _, err := g.IsAncestor(t.Context(), repo, first, side); err == nil {
 		t.Error("IsAncestor(unknown commit) = nil error, want an error")
+	}
+	if _, err := g.IsAncestor(t.Context(), repo, side, side); err == nil {
+		t.Error("IsAncestor(both unknown) = nil error, want an error")
 	}
 	if _, err := g.IsAncestor(t.Context(), repo, "--all", second); err == nil {
 		t.Error("IsAncestor(option) = nil error, want an error")

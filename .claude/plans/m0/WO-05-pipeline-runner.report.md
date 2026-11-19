@@ -70,3 +70,75 @@ Decisions:
 
 Outside scope:
 - Docs rows that may need a sync once accepted: `docs/architecture.md` pipeline row is still accurate; `docs/interfaces.md` lists `Job` only. The Runner's exported surface (`NewRunner`, `Run`, `Jobs`, `JobFailureFingerprint`, `ErrUnknownJob`, `ErrDuplicateJob`) and the `job_failure|<job>` fingerprint format are not recorded in `docs/` yet; `mvp-plan/PLAN.md` describes the findings fingerprint as `kind|repo|package|advisory_or_issue`, which the job_failure form (per the Ruling) does not follow.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m0/WO-05-pipeline-runner.md (finding WO05-001 and its fix-round-1 Ruling)
+Files changed:
+- internal/pipeline/runner.go (modified): after `Job.Run` returns, a nil job error is replaced by `ctx.Err()`, so a run whose context was cancelled or past its deadline is recorded as `RunFailed` with the context error's text, raises the job_failure finding, skips `ResolveFinding`, and returns an error satisfying `errors.Is` for the context error. A job's own non-nil error is kept. The doc comment on `Run` says so.
+- internal/pipeline/runner_test.go (modified): added `TestRunner_ContextEndedJobReturnsNil` with rows `cancelled` and `deadline`; each job stops on `ctx.Done()` and returns partial stats with a nil error. The test checks failed status, the context error text (returned run and FinishRun), `errors.Is`, the exact UpsertFinding value, and that ResolveFinding is not called. The deadline row runs inside `synctest.Test`, so the one-minute timeout passes on the fake clock without waiting.
+- .claude/plans/m0/WO-05-pipeline-runner.report.md (modified; this section)
+
+Commands run:
+- `go test -race -count=3 -run 'ContextEnded' -v ./internal/pipeline/` -> exit 0
+  ```
+  --- PASS: TestRunner_ContextEndedJobReturnsNil (0.00s)
+      --- PASS: TestRunner_ContextEndedJobReturnsNil/deadline (0.00s)
+      --- PASS: TestRunner_ContextEndedJobReturnsNil/cancelled (0.00s)
+  PASS
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	1.267s
+  ```
+- With the fix temporarily disabled (`jobErr = nil` in place of `jobErr = ctx.Err()`, restored straight after): `go test -race -count=1 -run 'ContextEnded' ./internal/pipeline/` -> exit 1
+  ```
+  --- FAIL: TestRunner_ContextEndedJobReturnsNil (0.00s)
+      --- FAIL: TestRunner_ContextEndedJobReturnsNil/cancelled (0.00s)
+      --- FAIL: TestRunner_ContextEndedJobReturnsNil/deadline (0.00s)
+  FAIL
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/pipeline	0.210s
+  FAIL
+  ```
+- `make check` -> exit 0
+  ```
+  ==> vet
+  go vet ./...
+  ==> build
+  go build ./...
+  ==> test
+  go test -race ./...
+  ok  	github.com/Amrit-Code/upstreamwatch/cmd/upw	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/config	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/model	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	1.112s
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/query	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/sched	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/store	[no test files]
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/web	[no test files]
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+     On | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+  ```
+- `go test -race -count=3 ./internal/pipeline/` -> exit 0
+  ```
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	1.105s
+  ```
+- `go list -f '{{join .Imports "\n"}}' ./internal/pipeline | grep upstreamwatch` -> exit 0
+  ```
+  github.com/Amrit-Code/upstreamwatch/internal/model
+  ```
+- `git status --porcelain` -> exit 0
+  ```
+   M internal/pipeline/runner.go
+   M internal/pipeline/runner_test.go
+  ```
+
+Decisions: the round-0 decision "a job that returns nil after its context was cancelled is recorded as succeeded" is replaced by the Ruling. The context is checked once, right after `Job.Run` returns (and after panic recovery; a panic keeps its `panic: ` error).
+Outside scope: none. The `integration_test.go` and `runner_extra_test.go` files on main were not created here. If either asserts the old nil-after-cancel behaviour, it will now fail on main.

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -443,6 +444,80 @@ func TestRunner_CancelledContextStillRecords(t *testing.T) {
 	}
 	if len(f.findings.upserted) != 1 {
 		t.Errorf("UpsertFinding called %d times, want 1", len(f.findings.upserted))
+	}
+}
+
+func TestRunner_ContextEndedJobReturnsNil(t *testing.T) {
+	t.Parallel()
+	partial := model.Stats{"fetched": 2}
+	tests := []struct {
+		name string
+		// setup returns the context to run with and the job body; the context
+		// ends while the job runs and the job then returns a nil error.
+		setup   func(t *testing.T) (context.Context, func(context.Context, model.Scope) (model.Stats, error))
+		wantErr error
+	}{
+		{
+			name: "cancelled",
+			setup: func(t *testing.T) (context.Context, func(context.Context, model.Scope) (model.Stats, error)) {
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				return ctx, func(ctx context.Context, _ model.Scope) (model.Stats, error) {
+					cancel()
+					<-ctx.Done()
+					return partial, nil
+				}
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "deadline",
+			setup: func(t *testing.T) (context.Context, func(context.Context, model.Scope) (model.Stats, error)) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				t.Cleanup(cancel)
+				return ctx, func(ctx context.Context, _ model.Scope) (model.Stats, error) {
+					<-ctx.Done()
+					return partial, nil
+				}
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// synctest's fake clock lets the one-minute deadline pass at once.
+			synctest.Test(t, func(t *testing.T) {
+				ctx, body := tt.setup(t)
+				job := &fakeJob{name: "issues", run: body}
+				f := newFixture(t, job)
+
+				got, err := f.runner.Run(ctx, "issues", model.Scope{})
+
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("Run() error = %v, want errors.Is %v", err, tt.wantErr)
+				}
+				if got.Status != model.RunFailed || got.Error != tt.wantErr.Error() {
+					t.Errorf("Run() = status %q error %q, want %q %q", got.Status, got.Error, model.RunFailed, tt.wantErr.Error())
+				}
+				if len(f.runs.finished) != 1 || f.runs.finished[0].Status != model.RunFailed || f.runs.finished[0].Error != tt.wantErr.Error() {
+					t.Errorf("FinishRun got %+v, want one failed run with %q", f.runs.finished, tt.wantErr.Error())
+				}
+				wantFinding := model.Finding{
+					Kind:          model.KindJobFailure,
+					Fingerprint:   "job_failure|issues",
+					Score:         50,
+					RankReason:    "job issues failed: " + tt.wantErr.Error(),
+					LastChangedAt: t1,
+				}
+				if len(f.findings.upserted) != 1 || !reflect.DeepEqual(f.findings.upserted[0], wantFinding) {
+					t.Errorf("UpsertFinding got %+v, want [%+v]", f.findings.upserted, wantFinding)
+				}
+				if len(f.findings.resolved) != 0 {
+					t.Errorf("ResolveFinding called %d times, want 0", len(f.findings.resolved))
+				}
+			})
+		})
 	}
 }
 

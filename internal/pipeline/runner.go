@@ -93,7 +93,9 @@ func JobFailureFingerprint(job string) string {
 // already in progress on this Runner to end first. It returns the finished
 // run and the job's error wrapped as "run job <name>: ...", joined with any
 // error from recording the outcome. A job that panics is recorded and
-// returned as a failure whose text starts "panic: ".
+// returned as a failure whose text starts "panic: ". If ctx is cancelled or
+// past its deadline when the job returns a nil error, the run is a failure
+// with ctx.Err() as the job error; a job's own non-nil error is kept.
 func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.Run, error) {
 	j, ok := r.jobs[job]
 	if !ok {
@@ -112,6 +114,11 @@ func (r *Runner) Run(ctx context.Context, job string, scope model.Scope) (model.
 	}
 
 	stats, jobErr := runJob(ctx, j, scope)
+	if jobErr == nil {
+		// A job that stopped early on cancellation but reported no error
+		// still did not finish its work; record the context error.
+		jobErr = ctx.Err()
+	}
 	finished := r.now().UTC()
 
 	run.FinishedAt = finished

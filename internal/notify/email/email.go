@@ -165,6 +165,11 @@ func (n *Notifier) Send(ctx context.Context, d model.Digest) error {
 		if err := w.Close(); err != nil {
 			return n.stepError(ctx, "data", err)
 		}
+		// The server has accepted the message. A failed QUIT must not make
+		// the digest count as failed, or the retry would deliver it twice.
+		if err := c.Quit(); err != nil {
+			n.logger.Warn("email quit failed after the message was accepted", "host", n.opts.Host, "error", n.stepError(ctx, "quit", err))
+		}
 		return nil
 	})
 	if err != nil {
@@ -177,35 +182,42 @@ func (n *Notifier) Send(ctx context.Context, d model.Digest) error {
 // Check connects, says EHLO, upgrades to TLS as Send does, authenticates
 // when a username is set, and quits without sending a message.
 func (n *Notifier) Check(ctx context.Context) error {
-	return n.session(ctx, func(context.Context, *smtp.Client) error { return nil })
+	return n.session(ctx, func(ctx context.Context, c *smtp.Client) error {
+		if err := c.Quit(); err != nil {
+			return n.stepError(ctx, "quit", err)
+		}
+		return nil
+	})
 }
 
 // session runs one SMTP exchange: dial, TLS, EHLO, STARTTLS, AUTH, then fn,
-// then QUIT. The whole exchange is bounded by the timeout and ends when ctx
-// ends.
+// which ends the exchange with QUIT. The whole exchange is bounded by the
+// timeout and ends when ctx ends.
 func (n *Notifier) session(ctx context.Context, fn func(context.Context, *smtp.Client) error) error {
 	ctx, cancel := context.WithTimeout(ctx, n.timeout)
 	defer cancel()
 
-	conn, err := n.dial(ctx, "tcp", n.addr)
+	raw, err := n.dial(ctx, "tcp", n.addr)
 	if err != nil {
 		return n.stepError(ctx, "dial", err)
 	}
 	// net/smtp has no timeouts or context of its own: the deadline bounds
-	// every read and write, and closing the connection when ctx ends unblocks
-	// whatever call is waiting.
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	// every read and write, and closing the TCP connection when ctx ends
+	// unblocks whatever call is waiting, TLS reads included. raw is never
+	// reassigned, so the callback reads it without a race.
+	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
 	defer stop()
 	deadline, _ := ctx.Deadline() // always set: ctx carries the timeout
-	if err := conn.SetDeadline(deadline); err != nil {
-		_ = conn.Close() // best effort: the deadline error is the one returned
+	if err := raw.SetDeadline(deadline); err != nil {
+		_ = raw.Close() // best effort: the deadline error is the one returned
 		return n.stepError(ctx, "dial", err)
 	}
 
+	conn := raw
 	if n.opts.Port == implicitTLSPort {
-		tc := tls.Client(conn, n.tlsConfig())
+		tc := tls.Client(raw, n.tlsConfig())
 		if err := tc.HandshakeContext(ctx); err != nil {
-			_ = conn.Close() // best effort: the handshake error is the one returned
+			_ = raw.Close() // best effort: the handshake error is the one returned
 			return n.stepError(ctx, "tls", err)
 		}
 		conn = tc
@@ -213,7 +225,7 @@ func (n *Notifier) session(ctx context.Context, fn func(context.Context, *smtp.C
 
 	c, err := smtp.NewClient(conn, n.opts.Host)
 	if err != nil {
-		_ = conn.Close() // best effort: the greeting error is the one returned
+		_ = raw.Close() // best effort: the greeting error is the one returned
 		return n.stepError(ctx, "greeting", err)
 	}
 	// After a successful QUIT the connection is already closed and this
@@ -238,13 +250,7 @@ func (n *Notifier) session(ctx context.Context, fn func(context.Context, *smtp.C
 			return n.stepError(ctx, "auth", err)
 		}
 	}
-	if err := fn(ctx, c); err != nil {
-		return err
-	}
-	if err := c.Quit(); err != nil {
-		return n.stepError(ctx, "quit", err)
-	}
-	return nil
+	return fn(ctx, c)
 }
 
 // tlsConfig returns the TLS settings for both implicit TLS and STARTTLS.

@@ -87,3 +87,77 @@ Outside scope:
 
 Concerns: none
 Question or blocker: none
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-08-notify-email-stdout.md
+Files changed:
+- internal/notify/email/email.go (modified)
+- internal/notify/email/email_test.go (modified)
+- internal/notify/email/fakesmtp_test.go (modified)
+- .claude/plans/m2/WO-08-notify-email-stdout.report.md (modified)
+
+Findings addressed:
+1. Data race on `conn`: `session` now keeps the dialled connection in `raw`, which is never reassigned; the `context.AfterFunc` callback, the deadline and every cleanup close `raw` (closing the TCP connection also unblocks TLS reads). The TLS wrapper lives in a separate `conn` variable used only for `smtp.NewClient`. New test `TestSend_CancelDuringImplicitTLS`: the fake completes the implicit-TLS handshake, signals on a channel and then hangs; the test cancels the context while the client waits for the greeting and expects `context.Canceled`. Run against the unfixed code under `-race -count=3` it reported `WARNING: DATA RACE` (email_test.go:335/343 in the stacks); after the fix `-race -count=10` is clean.
+2. QUIT after an accepted message: QUIT moved out of `session` into the callers. `Send` calls QUIT after `DATA` close returns success and, on failure, logs `email quit failed after the message was accepted` at Warn with host and the redacted step error, and returns nil (the Info "email digest sent" line still follows). `Check` returns the quit error as before. New fake option `dropAtQUIT` closes the connection without replying; new tests `TestSend_QUITFailureAfterAcceptedMessage` (Send returns nil, message received, WARN line names `: quit: `) and `TestCheck_QUITFailure` (Check returns a quit error). Against the unfixed code the Send test failed with `quit: EOF, want nil after the message was accepted`.
+3. Redaction test that did not bite: the fake's 535 reply now echoes the decoded AUTH payload (`%q`, so the password appears verbatim). `TestSend_ErrorHasNoPassword` additionally asserts the error contains `[REDACTED]`; `TestCheck_AuthRejected` uses the same fake and so is now meaningful too. Mutation check: with the password replacement in `stepError` temporarily disabled, both tests failed (`... contains the password`); the line was restored and confirmed (`grep -n 'pw != ""'` shows it at email.go:284).
+
+Also changed in the fake: implicit TLS now completes before the `hang` check, so `hang` with `implicitTLS` hangs after the handshake (the plain `hang` test is unaffected).
+
+Commands run:
+- `go test -race -count=3 ./internal/notify/email/` (new tests, before the fix) -> exit 1
+  WARNING: DATA RACE ... testing.go:1867: race detected during execution of test
+  --- FAIL: TestSend_CancelDuringImplicitTLS (0.01s)
+  email_test.go:365: Send() error = email: 127.0.0.1:64540: quit: EOF, want nil after the message was accepted
+  --- FAIL: TestSend_QUITFailureAfterAcceptedMessage (0.00s)
+  (other FAIL lines in that run were race attributions to parallel tests; TestSend_ErrorHasNoPassword and TestCheck_AuthRejected pass alone: `go test -race -count=1 -run 'TestSend_ErrorHasNoPassword|TestCheck_AuthRejected' -v` -> exit 0)
+- `go test -race -count=10 ./internal/notify/...` (after the fix) -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/email	2.302s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/stdout	1.112s
+- `go test -race -count=1 -run 'TestSend_ErrorHasNoPassword|TestCheck_AuthRejected' ./internal/notify/email/` (password replacement temporarily disabled) -> exit 1
+  --- FAIL: TestCheck_AuthRejected (0.01s)
+      email_test.go:497: Check() error = "email: 127.0.0.1:64932: auth: 535 \"5.7.8 authentication credentials invalid: \\\"\\\\x00upw-sender\\\\x00example-password-7f3a\\\"\"" contains the password
+  --- FAIL: TestSend_ErrorHasNoPassword (0.01s)
+      email_test.go:284: Send() error = "... contains the password
+      email_test.go:287: Send() error = "...", want the echoed password replaced by [REDACTED]
+  FAIL
+- `make check` -> exit 0
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/report	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/testutil/gitrepo	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/timeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/vuln	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=1 ./internal/notify/email/ ./internal/notify/stdout/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/email	1.248s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/stdout	1.102s
+- `git status --porcelain` -> exit 0 (before this section was appended)
+   M internal/notify/email/email.go
+   M internal/notify/email/email_test.go
+   M internal/notify/email/fakesmtp_test.go
+
+Decisions:
+- QUIT is now each caller's last step inside the session callback rather than part of `session`, so Send can treat it as best effort and Check can keep it fatal.
+- The Warn line carries the redacted `*smtpError` (`email: host:port: quit: ...`) as its `error` attribute; no password or body.
+- `TestSend_CancelDuringImplicitTLS` asserts only `errors.Is(err, context.Canceled)`, not the step name: the cancel lands after the server-side handshake, which in practice is after the client's handshake returns, but the step could in principle be `tls` rather than `greeting`.
+
+Outside scope: none new.
+Concerns: none
+Question or blocker: none

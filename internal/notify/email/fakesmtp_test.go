@@ -26,11 +26,15 @@ type fakeConfig struct {
 	// implicitTLS, when set, wraps every connection in TLS before the
 	// greeting, as on port 465.
 	implicitTLS *tls.Config
-	// auth advertises AUTH PLAIN; rejectAuth answers it with 535.
+	// auth advertises AUTH PLAIN; rejectAuth answers it with 535 and echoes
+	// the decoded payload, credentials included, in the reply text.
 	auth       bool
 	rejectAuth bool
-	// hang accepts connections and never answers.
+	// hang accepts connections (and completes implicit TLS when set) and
+	// never answers.
 	hang bool
+	// dropAtQUIT closes the connection on QUIT without replying.
+	dropAtQUIT bool
 }
 
 // received is what the fake server saw, across all connections.
@@ -56,6 +60,9 @@ type fakeSMTP struct {
 	cfg  fakeConfig
 	wg   sync.WaitGroup
 	once sync.Once
+	// handshook receives a value, when nobody has taken the last one yet,
+	// each time an implicit-TLS handshake completes.
+	handshook chan struct{}
 
 	mu  sync.Mutex
 	got received
@@ -67,7 +74,7 @@ func newFakeSMTP(t *testing.T, cfg fakeConfig) *fakeSMTP {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeSMTP{ln: ln, cfg: cfg}
+	s := &fakeSMTP{ln: ln, cfg: cfg, handshook: make(chan struct{}, 1)}
 	s.wg.Go(s.acceptLoop)
 	t.Cleanup(s.close)
 	return s
@@ -113,10 +120,6 @@ func (s *fakeSMTP) acceptLoop() {
 
 func (s *fakeSMTP) serve(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
-	if s.cfg.hang {
-		_, _ = io.Copy(io.Discard, conn) // returns when the client closes
-		return
-	}
 	tlsOn := false
 	if s.cfg.implicitTLS != nil {
 		tc := tls.Server(conn, s.cfg.implicitTLS)
@@ -124,6 +127,14 @@ func (s *fakeSMTP) serve(conn net.Conn) {
 			return
 		}
 		conn, tlsOn = tc, true
+		select {
+		case s.handshook <- struct{}{}:
+		default:
+		}
+	}
+	if s.cfg.hang {
+		_, _ = io.Copy(io.Discard, conn) // returns when the client closes
+		return
 	}
 	tp := textproto.NewConn(conn)
 	reply := func(format string, args ...any) bool { return tp.PrintfLine(format, args...) == nil }
@@ -176,7 +187,7 @@ func (s *fakeSMTP) serve(conn net.Conn) {
 			on := tlsOn
 			s.record(func(r *received) { r.authPayload, r.tlsAtAuth = string(payload), on })
 			if s.cfg.rejectAuth {
-				reply("535 5.7.8 authentication credentials invalid")
+				reply("535 5.7.8 authentication credentials invalid: %q", payload)
 			} else {
 				reply("235 2.7.0 authentication successful")
 			}
@@ -204,7 +215,9 @@ func (s *fakeSMTP) serve(conn net.Conn) {
 			s.record(func(r *received) { r.data = data.Bytes() })
 			reply("250 queued")
 		case "QUIT":
-			reply("221 bye")
+			if !s.cfg.dropAtQUIT {
+				reply("221 bye")
+			}
 			return
 		default:
 			reply("502 unrecognised command")

@@ -278,8 +278,13 @@ func TestSend_ErrorHasNoPassword(t *testing.T) {
 	if !strings.Contains(msg, ": auth: ") || !strings.Contains(msg, "535") {
 		t.Errorf("Send() error = %q, want it to name the auth step and the 535 reply", msg)
 	}
+	// The fake echoes the AUTH payload in its 535 text, so the password
+	// reached the error chain and must have been replaced.
 	if strings.Contains(msg, testPassword) {
 		t.Errorf("Send() error = %q contains the password", msg)
+	}
+	if !strings.Contains(msg, "[REDACTED]") {
+		t.Errorf("Send() error = %q, want the echoed password replaced by [REDACTED]", msg)
 	}
 	for _, c := range srv.result().commands {
 		if c == "MAIL" {
@@ -308,6 +313,79 @@ func TestSend_ServerUntrustedCertificate(t *testing.T) {
 	}
 	if got := srv.result(); got.authPayload != "" {
 		t.Errorf("server received AUTH %q over an unverified connection", got.authPayload)
+	}
+}
+
+func TestSend_CancelDuringImplicitTLS(t *testing.T) {
+	t.Parallel()
+	serverTLS, pool := selfSignedTLS(t)
+	srv := newFakeSMTP(t, fakeConfig{implicitTLS: serverTLS, hang: true})
+	n := newNotifier(t, email.Options{
+		Host:    "localhost",
+		Port:    465,
+		From:    "upw@example.org",
+		To:      []string{"ops@example.org"},
+		RootCAs: pool,
+	}, discardLogger())
+	email.SetDial(n, dialTo(srv.addr()))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	errc := make(chan error, 1)
+	go func() { errc <- n.Send(ctx, testDigest()) }()
+	// Cancel once the TLS handshake is done, while the client waits for the
+	// greeting on the TLS connection.
+	select {
+	case <-srv.handshook:
+	case err := <-errc:
+		t.Fatalf("Send() returned %v before the TLS handshake completed", err)
+	}
+	cancel()
+
+	err := <-errc
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Send() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSend_QUITFailureAfterAcceptedMessage(t *testing.T) {
+	t.Parallel()
+	srv := newFakeSMTP(t, fakeConfig{dropAtQUIT: true})
+	var logs bytes.Buffer
+	n := newNotifier(t, email.Options{
+		Host: "127.0.0.1",
+		Port: srv.port(),
+		From: "upw@example.org",
+		To:   []string{"ops@example.org"},
+	}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	// The server accepted the message, so a lost QUIT reply must not make
+	// the digest count as failed and be sent again.
+	if err := n.Send(t.Context(), testDigest()); err != nil {
+		t.Fatalf("Send() error = %v, want nil after the message was accepted", err)
+	}
+	if got := srv.result(); got.data == nil {
+		t.Fatal("server received no message")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, ": quit: ") {
+		t.Errorf("logs = %q, want a WARN line naming the quit step", out)
+	}
+}
+
+func TestCheck_QUITFailure(t *testing.T) {
+	t.Parallel()
+	srv := newFakeSMTP(t, fakeConfig{dropAtQUIT: true})
+	n := newNotifier(t, email.Options{
+		Host: "127.0.0.1",
+		Port: srv.port(),
+		From: "upw@example.org",
+		To:   []string{"ops@example.org"},
+	}, discardLogger())
+
+	err := n.Check(t.Context())
+	if err == nil || !strings.Contains(err.Error(), ": quit: ") {
+		t.Errorf("Check() error = %v, want a quit failure", err)
 	}
 }
 

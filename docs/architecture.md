@@ -170,6 +170,8 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | digest | `report.Service` | ranking; what changed since last digest | `Notifier` (every enabled one) | findings, digests |
 | backup | `ops.Backup` | retention | store only | backup file |
 
+The timeline job bounds what a repository can make it hold or store. It reads file contents from `GitSource` 32 files at a time. A file that parses to more than 20,000 dependencies counts as a parse error, and a target run that would produce more than 500,000 new events fails. Before events are computed it drops every dependency whose package name or package URL contains a control character, whitespace, `://` or `@`, counting them in the `deps_dropped` stat, and passes every version and requirement through `model.Redact`. Parse errors are logged redacted.
+
 ## Entry points
 
 ### HTTP routes
@@ -198,7 +200,7 @@ The settings page never shows the stored key. It shows the last four characters 
 |---|---|
 | `upw serve` | starts Scheduler and web.Server; stops on SIGINT or SIGTERM, web server first, then the scheduler, then the store |
 | `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all` |
-| `upw timeline <slug> [package-url] [-on YYYY-MM-DD] [-json]` | `query.Service.Timeline`; prints the repo's dependency intervals as a table, or as a JSON array with `-json`; `-on` keeps the intervals in force at the end of that UTC day; builds no Runner and starts nothing |
+| `upw timeline <slug> [package-url] [-on YYYY-MM-DD] [-json]` | `query.Service.Timeline`; prints the repo's dependency intervals as a table, or as a JSON array with `-json`; in the table a package URL, version or manifest path with a control character or invalid UTF-8 is printed in quoted form; `-on` keeps the intervals in force at the end of that UTC day; builds no Runner and starts nothing |
 | `upw findings` | `internal/query` |
 | `upw llm estimate\|rejudge` | `triage.Service` |
 | `upw eval run\|report\|import` | `eval.Service` (`import` imports labels) |

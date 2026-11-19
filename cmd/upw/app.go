@@ -43,16 +43,21 @@ func openApp(ctx context.Context, configPath string, logger *slog.Logger, getenv
 }
 
 // start does what openApp does and builds the Runner with every registered
-// job. On error nothing is left open.
+// job. A notify channel that cannot be built fails start-up; the error names
+// the channel, never its secret. On error nothing is left open.
 func start(ctx context.Context, configPath string, logger *slog.Logger, getenv func(string) string) (*app, error) {
 	a, err := openApp(ctx, configPath, logger, getenv)
 	if err != nil {
 		return nil, err
 	}
 
+	jobs, err := registeredJobs(a.cfg, a.db, logger)
+	if err != nil {
+		return nil, errors.Join(err, a.close())
+	}
 	// Passing db as RunStore and FindingStore is the compile-time check that
 	// *store.DB satisfies the Runner's store interfaces.
-	runner, err := pipeline.NewRunner(registeredJobs(a.cfg, a.db, logger), a.db, a.db, logger)
+	runner, err := pipeline.NewRunner(jobs, a.db, a.db, logger)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("build runner: %w", err), a.close())
 	}

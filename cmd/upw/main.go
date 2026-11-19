@@ -28,6 +28,7 @@ commands:
   run       run one job, or every job once with "run all -once";
             "run timeline -rebuild" rebuilds stored timelines from the start
   timeline  print a repo's dependency intervals
+  findings  print the open findings, highest score first
   doctor    check the config, secrets, git and the outside services
   help      print this help
 
@@ -57,6 +58,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		err = cmdRun(ctx, args[1:], stdout, stderr, getenv)
 	case "timeline":
 		err = cmdTimeline(ctx, args[1:], stdout, stderr, getenv)
+	case "findings":
+		err = cmdFindings(ctx, args[1:], stdout, stderr, getenv)
 	case "doctor":
 		err = cmdDoctor(ctx, args[1:], stdout, stderr, getenv, doctorChecks)
 	case "help", "-h", "--help":

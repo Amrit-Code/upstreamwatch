@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"reflect"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/config"
+	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 )
 
@@ -296,23 +298,26 @@ func TestDoctorChecks_Names(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	tests := []struct {
-		name string
-		auth config.Auth
-		want []string
+		name   string
+		auth   config.Auth
+		notify []config.Channel
+		want   []string
 	}{
-		{name: "no tokens", want: []string{"git", "osv", "deps.dev", "github"}},
+		{name: "no tokens", want: []string{"git", "osv", "deps.dev", "kev", "epss", "github"}},
 		{name: "upstream only", auth: config.Auth{GitHubUpstreamToken: fakeUpstreamToken},
-			want: []string{"git", "osv", "deps.dev", "github (upstream token)"}},
+			want: []string{"git", "osv", "deps.dev", "kev", "epss", "github (upstream token)"}},
 		{name: "targets only", auth: config.Auth{GitHubTargetsToken: fakeTargetsToken},
-			want: []string{"git", "osv", "deps.dev", "github (targets token)"}},
+			want: []string{"git", "osv", "deps.dev", "kev", "epss", "github (targets token)"}},
 		{name: "both", auth: config.Auth{GitHubTargetsToken: fakeTargetsToken, GitHubUpstreamToken: fakeUpstreamToken},
-			want: []string{"git", "osv", "deps.dev", "github (upstream token)", "github (targets token)"}},
+			want: []string{"git", "osv", "deps.dev", "kev", "epss", "github (upstream token)", "github (targets token)"}},
+		{name: "notify channels last", notify: []config.Channel{{Type: "stdout"}, {Type: "ntfy"}, {Type: "stdout"}},
+			want: []string{"git", "osv", "deps.dev", "kev", "epss", "github", "notify stdout", "notify stdout#2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var got []string
-			for _, c := range doctorChecks(config.Config{Auth: tt.auth}, logger) {
+			for _, c := range doctorChecks(config.Config{Auth: tt.auth, Notify: config.Notify{Channels: tt.notify}}, logger) {
 				got = append(got, c.name)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
@@ -368,5 +373,126 @@ func TestSecretLines(t *testing.T) {
 				t.Errorf("secretLines() =\n%v\nwant\n%v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNotifyChecks_FromConfig(t *testing.T) {
+	t.Parallel()
+	chs := []config.Channel{
+		{Type: "stdout"},
+		validEmail(),
+		{Type: "discord_webhook"}, // secret unset: no check
+		{Type: "slack_webhook", URL: "https://hooks.example.invalid/services/abcd"},
+		{Type: "ntfy", URL: "https://ntfy.example.invalid/upw-topic"},
+		{Type: "discord_webhook", URL: "https://discord.example.invalid/api/webhooks/1/abcd"},
+	}
+	got := notifyChecks(chs, testClient(), slog.New(slog.DiscardHandler))
+	want := []struct {
+		name, success string
+		probed        bool
+	}{
+		{"notify stdout", "writes to standard output", false},
+		{"notify email", "login accepted", true},
+		{"notify slack_webhook", "configured (not probed)", true},
+		{"notify ntfy", "server healthy", true},
+		{"notify discord_webhook#2", "webhook reachable", true},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("notifyChecks() returned %d checks, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].name != w.name || got[i].success != w.success || (got[i].checker != nil) != w.probed {
+			t.Errorf("check %d = %q %q probed=%v, want %q %q probed=%v",
+				i, got[i].name, got[i].success, got[i].checker != nil, w.name, w.success, w.probed)
+		}
+	}
+	// Slack has no probe: its Check makes no request and passes.
+	if err := got[2].checker.Check(t.Context()); err != nil {
+		t.Errorf("slack Check() error = %v, want nil", err)
+	}
+}
+
+func TestNotifyChecks_BuildFailure(t *testing.T) {
+	t.Parallel()
+	bad := validEmail()
+	bad.To = []string{"not an address"}
+	got := notifyChecks([]config.Channel{bad}, testClient(), slog.New(slog.DiscardHandler))
+	if len(got) != 1 || got[0].name != "notify email" {
+		t.Fatalf("notifyChecks() = %+v, want one check named notify email", got)
+	}
+	err := got[0].checker.Check(t.Context())
+	if err == nil {
+		t.Fatal("Check() = nil, want the build error")
+	}
+	if strings.Contains(err.Error(), fakeSMTPPassword) {
+		t.Errorf("Check() error = %q, contains the password", err)
+	}
+}
+
+func TestDoctor_NotifyChecks(t *testing.T) {
+	t.Parallel()
+	cfg := writeConfig(t, "")
+	checks := fixedChecks(
+		namedCheck{name: "osv", success: "api.osv.dev reachable", checker: fakeChecker{}},
+		namedCheck{name: "notify stdout", success: "writes to standard output"},
+		namedCheck{name: "notify email", success: "login accepted", checker: fakeChecker{}},
+		namedCheck{name: "notify discord_webhook", success: "webhook reachable",
+			checker: fakeChecker{err: errors.New("discord: check discord.example.invalid: status 404")}},
+		namedCheck{name: "notify slack_webhook", success: "configured (not probed)", checker: fakeChecker{}},
+	)
+	code, stdout, stderr := doctor(t, []string{"-config", cfg}, nil, checks)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 for the failed discord check; stderr %q", code, stderr)
+	}
+	for _, line := range []string{
+		"ok    notify stdout           writes to standard output\n",
+		"ok    notify email            login accepted\n",
+		"fail  notify discord_webhook  discord: check discord.example.invalid: status 404\n",
+		"ok    notify slack_webhook    configured (not probed)\n",
+	} {
+		if !strings.Contains(stdout, line) {
+			t.Errorf("stdout has no line %q:\n%s", line, stdout)
+		}
+	}
+}
+
+func TestDoctor_PasswordRedacted(t *testing.T) {
+	t.Parallel()
+	// A loopback port with nothing listening, so the email probe fails fast
+	// without leaving the machine.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	cfg := writeConfig(t, fmt.Sprintf(`notify:
+  channels:
+    - type: email
+      host: 127.0.0.1
+      port: %d
+      username: upw
+      password: ${UPW_SMTP_PASSWORD}
+      from: upw@example.invalid
+      to: [ops@example.invalid]
+`, port))
+	notifyOnly := func(cfg config.Config, logger *slog.Logger) []namedCheck {
+		return notifyChecks(cfg.Notify.Channels, httpx.New(nil, httpx.Options{}, logger), logger)
+	}
+	code, stdout, stderr := doctor(t, []string{"-config", cfg, "-log-level", "debug"},
+		map[string]string{"UPW_SMTP_PASSWORD": fakeSMTPPassword}, notifyOnly)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 for the refused connection; stdout:\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "fail  notify email ") {
+		t.Errorf("stdout has no failed notify email line:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "ok    notify channel 1        email ****e5f6\n") {
+		t.Errorf("stdout does not show the password's last four characters only:\n%s", stdout)
+	}
+	if strings.Contains(stdout, fakeSMTPPassword) || strings.Contains(stderr, fakeSMTPPassword) {
+		t.Errorf("output contains the email password:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 }

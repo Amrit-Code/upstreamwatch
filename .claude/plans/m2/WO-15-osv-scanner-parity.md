@@ -67,3 +67,4 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-19 (lead): on the Mac osv-scanner 2.7.1 is installed at `$HOME/go/bin/osv-scanner` (built with `CGO_ENABLED=0`; the cgo build fails to link). Look it up with `exec.LookPath("osv-scanner")` first, then `$(go env GOPATH)/bin/osv-scanner`; skip only when neither exists.

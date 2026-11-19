@@ -95,15 +95,15 @@ func TestIntegration_ServiceReadsWhatRunnerWrote(t *testing.T) {
 			t.Errorf("LastRuns() = %+v, want what the store holds %+v", gotRuns, storeRuns)
 		}
 
-		gotFindings, err := svc.OpenFindings(ctx)
+		gotFindings, err := svc.Findings(ctx, model.FindingFilter{})
 		if err != nil {
-			t.Fatalf("OpenFindings() error = %v", err)
+			t.Fatalf("Findings() error = %v", err)
 		}
 		if len(gotFindings) != 1 {
-			t.Fatalf("OpenFindings() = %+v, want one finding", gotFindings)
+			t.Fatalf("Findings() = %+v, want one finding", gotFindings)
 		}
 		wantFinding := model.Finding{
-			ID:            gotFindings[0].ID,
+			ID:            gotFindings[0].Finding.ID,
 			Kind:          model.KindJobFailure,
 			Fingerprint:   "job_failure|ingest",
 			Score:         50,
@@ -112,15 +112,23 @@ func TestIntegration_ServiceReadsWhatRunnerWrote(t *testing.T) {
 			LastChangedAt: failedAt,
 			State:         model.FindingState{State: model.StateOpen},
 		}
-		if gotFindings[0].ID == 0 || !reflect.DeepEqual(gotFindings[0], wantFinding) {
-			t.Errorf("OpenFindings()[0] = %+v, want %+v", gotFindings[0], wantFinding)
+		wantDetail := model.FindingDetail{Finding: wantFinding}
+		if gotFindings[0].Finding.ID == 0 || !reflect.DeepEqual(gotFindings[0], wantDetail) {
+			t.Errorf("Findings()[0] = %+v, want %+v", gotFindings[0], wantDetail)
 		}
-		storeFindings, err := db.ListOpenFindings(ctx)
+		storeDetail, err := db.GetFindingDetail(ctx, wantFinding.ID)
 		if err != nil {
-			t.Fatalf("db.ListOpenFindings() error = %v", err)
+			t.Fatalf("db.GetFindingDetail() error = %v", err)
 		}
-		if !reflect.DeepEqual(gotFindings, storeFindings) {
-			t.Errorf("OpenFindings() = %+v, want what the store holds %+v", gotFindings, storeFindings)
+		if !reflect.DeepEqual(gotFindings[0], storeDetail) {
+			t.Errorf("Findings()[0] = %+v, want what the store holds %+v", gotFindings[0], storeDetail)
+		}
+		gotDetail, err := svc.FindingDetail(ctx, wantFinding.ID)
+		if err != nil || !reflect.DeepEqual(gotDetail, wantDetail) {
+			t.Errorf("FindingDetail(%d) = %+v, %v; want %+v", wantFinding.ID, gotDetail, err, wantDetail)
+		}
+		if _, err := svc.FindingDetail(ctx, wantFinding.ID+100); !errors.Is(err, model.ErrNotFound) {
+			t.Errorf("FindingDetail(unknown) error = %v, want wrapping model.ErrNotFound", err)
 		}
 	})
 }
@@ -155,17 +163,17 @@ func TestIntegration_ServiceOrdersFindingsAndDropsResolved(t *testing.T) {
 			t.Fatalf("Run(mid) after recovery error = %v", err)
 		}
 
-		got, err := query.NewService(db, db, db, slog.New(slog.DiscardHandler)).OpenFindings(ctx)
+		got, err := query.NewService(db, db, db, slog.New(slog.DiscardHandler)).Findings(ctx, model.FindingFilter{})
 		if err != nil {
-			t.Fatalf("OpenFindings() error = %v", err)
+			t.Fatalf("Findings() error = %v", err)
 		}
 		var fps []string
-		for _, f := range got {
-			fps = append(fps, f.Fingerprint)
+		for _, d := range got {
+			fps = append(fps, d.Finding.Fingerprint)
 		}
 		want := []string{"job_failure|zeta", "job_failure|alpha"}
 		if !reflect.DeepEqual(fps, want) {
-			t.Errorf("OpenFindings() fingerprints = %q, want %q", fps, want)
+			t.Errorf("Findings() fingerprints = %q, want %q", fps, want)
 		}
 	})
 }
@@ -178,9 +186,9 @@ func TestIntegration_ServiceOnEmptyStore(t *testing.T) {
 	if err != nil || runs != nil {
 		t.Errorf("LastRuns() on an empty store = %+v, %v; want nil, nil", runs, err)
 	}
-	findings, err := svc.OpenFindings(t.Context())
+	findings, err := svc.Findings(t.Context(), model.FindingFilter{Suppressed: true})
 	if err != nil || findings != nil {
-		t.Errorf("OpenFindings() on an empty store = %+v, %v; want nil, nil", findings, err)
+		t.Errorf("Findings() on an empty store = %+v, %v; want nil, nil", findings, err)
 	}
 }
 
@@ -201,7 +209,10 @@ func TestIntegration_ServiceOnClosedStore(t *testing.T) {
 	if _, err := svc.LastRuns(t.Context()); err == nil {
 		t.Errorf("LastRuns() on a closed store error = nil, want an error")
 	}
-	if _, err := svc.OpenFindings(t.Context()); err == nil {
-		t.Errorf("OpenFindings() on a closed store error = nil, want an error")
+	if _, err := svc.Findings(t.Context(), model.FindingFilter{}); err == nil {
+		t.Errorf("Findings() on a closed store error = nil, want an error")
+	}
+	if _, err := svc.FindingDetail(t.Context(), 1); err == nil {
+		t.Errorf("FindingDetail() on a closed store error = nil, want an error")
 	}
 }

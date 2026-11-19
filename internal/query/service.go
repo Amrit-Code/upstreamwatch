@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 )
@@ -15,12 +16,13 @@ type Service struct {
 	findings FindingStore
 	timeline TimelineStore
 	logger   *slog.Logger
+	now      func() time.Time // time.Now; tests replace it
 }
 
 // NewService returns a Service that reads runs, findings, and repos with
 // their dependency intervals from the given stores.
 func NewService(runs RunStore, findings FindingStore, timeline TimelineStore, logger *slog.Logger) *Service {
-	return &Service{runs: runs, findings: findings, timeline: timeline, logger: logger}
+	return &Service{runs: runs, findings: findings, timeline: timeline, logger: logger, now: time.Now}
 }
 
 // LastRuns returns the most recent run of each job, ordered by job name.
@@ -30,14 +32,4 @@ func (s *Service) LastRuns(ctx context.Context) ([]model.Run, error) {
 		return nil, fmt.Errorf("read latest runs: %w", err)
 	}
 	return runs, nil
-}
-
-// OpenFindings returns the findings whose state is open or acked, highest
-// score first.
-func (s *Service) OpenFindings(ctx context.Context) ([]model.Finding, error) {
-	findings, err := s.findings.ListOpenFindings(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read open findings: %w", err)
-	}
-	return findings, nil
 }

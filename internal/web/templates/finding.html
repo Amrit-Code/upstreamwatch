@@ -1,0 +1,78 @@
+{{define "content" -}}
+<h1>{{.Title}}</h1>
+<dl class="meta">
+<dt>Kind</dt><dd>{{.Kind}}</dd>
+<dt>Score</dt><dd>{{.Score}}</dd>
+<dt>Rank reason</dt><dd class="reason">{{.RankReason}}</dd>
+<dt>State</dt><dd>{{.State}}{{if .SnoozedUntil}} until {{.SnoozedUntil}} (UTC){{end}}</dd>
+{{if .Note}}<dt>Note</dt><dd class="reason">{{.Note}}</dd>
+{{end -}}
+{{if .ChangedAt}}<dt>Changed (UTC)</dt><dd>{{.ChangedAt}}{{if .ChangedBy}} by {{.ChangedBy}}{{end}}</dd>
+{{end -}}
+{{if .RepoSlug}}<dt>Repository</dt><dd><a href="{{.RepoLink}}">{{.RepoSlug}}</a></dd>
+{{end -}}
+{{if .Package}}<dt>Package</dt><dd>{{.Package}}</dd>
+{{end -}}
+{{if .Interval}}<dt>Version</dt><dd>{{.Version}}</dd>
+<dt>Manifest</dt><dd>{{.Manifest}}</dd>
+{{end -}}
+</dl>
+<section class="actions">
+<h2>Change state</h2>
+<form method="post" action="{{.Base}}/ack">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Ack</button>
+</form>
+<form method="post" action="{{.Base}}/snooze">
+<label>Snooze for <select name="for">
+<option value="1d">1 day</option>
+<option value="7d">7 days</option>
+<option value="30d">30 days</option>
+</select></label>
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Snooze</button>
+</form>
+<form method="post" action="{{.Base}}/dismiss">
+<label>Note <textarea name="note" rows="2"></textarea></label>
+<button type="submit">Dismiss</button>
+</form>
+{{if .Reopen -}}
+<form method="post" action="{{.Base}}/reopen">
+<button type="submit">Reopen</button>
+</form>
+{{end -}}
+</section>
+{{- with .Advisory}}
+<h2>Advisory {{.ID}}</h2>
+<dl class="meta">
+<dt>Aliases</dt><dd>{{.Aliases}}</dd>
+<dt>Summary</dt><dd class="reason">{{.Summary}}</dd>
+<dt>Severity</dt><dd>{{.Severity}}</dd>
+<dt>CVSS</dt><dd class="wrap">{{.CVSS}}</dd>
+<dt>Published</dt><dd>{{.Published}}</dd>
+<dt>Modified</dt><dd>{{.Modified}}</dd>
+<dt>Known exploited (KEV)</dt><dd>{{.KEV}}</dd>
+<dt>EPSS</dt><dd>{{.EPSS}}</dd>
+</dl>
+<h3>Details</h3>
+<pre class="details">{{.Details}}</pre>
+<h3>Exposures</h3>
+{{if .Exposures -}}
+<table>
+<thead>
+<tr><th>Version</th><th>Manifest</th><th>Exposed from</th><th>Exposed to</th><th>Fixed version</th><th>Confidence</th><th>Confidence reason</th></tr>
+</thead>
+<tbody>
+{{range .Exposures -}}
+<tr{{if .Open}} class="open"{{end}}><td>{{.Version}}</td><td>{{.Manifest}}</td><td>{{.ExposedFrom}}{{if .PinnedFrom}}<br><span class="pinned">pinned {{.PinnedFrom}}</span>{{end}}</td><td>{{.ExposedTo}}</td><td>{{.Fixed}}</td><td>{{.Confidence}}</td><td class="reason">{{.Reason}}</td></tr>
+{{end -}}
+</tbody>
+</table>
+{{- else -}}
+<p class="empty">No exposures recorded.</p>
+{{- end}}
+{{if .PinNote}}<p class="note">Where a pin date is shown, the version was pinned before the exposure starts: vulns.exposure_basis starts the exposure at the advisory's publication.</p>
+{{end -}}
+<p class="note">Exposure windows are estimates: they are built from first-parent commit dates and the advisory's dates, not from what was deployed.</p>
+{{- end}}
+{{- end}}

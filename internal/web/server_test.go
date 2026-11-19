@@ -115,7 +115,7 @@ func TestHealth_StoreError(t *testing.T) {
 	t.Parallel()
 	storeErr := errors.New("sqlite: database disk image is malformed")
 	var logs bytes.Buffer
-	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: testHost},
+	s, err := web.NewServer(&fakeHealth{err: storeErr}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: testHost},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -139,63 +139,6 @@ func TestHealth_StoreError(t *testing.T) {
 	}
 }
 
-func TestFindingsPage_Golden(t *testing.T) {
-	t.Parallel()
-	threeFindings := []model.Finding{
-		{ID: 7, Kind: model.KindJobFailure, Score: 9.96, RankReason: "job ingest failed twice in a row",
-			FirstSeenAt: t0, State: model.FindingState{State: model.StateOpen}},
-		{ID: 3, Kind: model.KindAdvisory, Score: 7.25,
-			RankReason:  "GHSA-xxxx-yyyy-zzzz affects github.com/example-org/example-lib <script>alert(1)</script> </pre> javascript:alert(1)",
-			FirstSeenAt: t0.Add(-26*time.Hour + 30*time.Second).In(time.FixedZone("X", -5*3600)),
-			State:       model.FindingState{State: model.StateAcked}},
-		{ID: 1, Kind: model.KindIssue, Score: 3, RankReason: "upstream issue \"leak & crash\" matches a used symbol",
-			FirstSeenAt: t0.Add(-72 * time.Hour), State: model.FindingState{State: model.StateOpen}},
-	}
-	tests := []struct {
-		name     string
-		golden   string
-		findings []model.Finding
-	}{
-		{name: "empty", golden: "findings_empty", findings: nil},
-		{name: "three findings", golden: "findings_list", findings: threeFindings},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newTestServer(t, &fakeHealth{}, &fakeFindings{findings: tt.findings})
-			rec := get(t, s.Handler(), "/")
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200", rec.Code)
-			}
-			if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
-				t.Errorf("Content-Type = %q, want text/html; charset=utf-8", got)
-			}
-			body := rec.Body.Bytes()
-			if bytes.Contains(body, []byte("<script>")) || bytes.Contains(body, []byte("</pre>")) {
-				t.Errorf("body contains unescaped markup:\n%s", body)
-			}
-			assertGolden(t, tt.golden, body)
-		})
-	}
-}
-
-func TestFindingsPage_StoreError(t *testing.T) {
-	t.Parallel()
-	storeErr := errors.New("sqlite: no such table: findings")
-	s := newTestServer(t, &fakeHealth{}, &fakeFindings{err: storeErr})
-	rec := get(t, s.Handler(), "/")
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", rec.Code)
-	}
-	body := rec.Body.String()
-	if got, want := strings.TrimSpace(body), "internal server error"; got != want {
-		t.Errorf("body = %q, want %q", got, want)
-	}
-	if strings.Contains(body, storeErr.Error()) {
-		t.Errorf("body %q contains the store error", body)
-	}
-}
-
 func TestStylesheet(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t, &fakeHealth{}, &fakeFindings{})
@@ -214,7 +157,7 @@ func TestStylesheet(t *testing.T) {
 func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t, &fakeHealth{}, &fakeFindings{})
-	for _, path := range []string{"/", "/health", "/static/style.css", "/nope", "/repos", "/repos/server"} {
+	for _, path := range []string{"/", "/health", "/static/style.css", "/nope", "/repos", "/repos/server", "/f/1", "/f/x"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			rec := get(t, s.Handler(), path)
@@ -279,7 +222,7 @@ func TestNewServer_BadBaseURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{BaseURL: tt.baseURL}, discardLogger())
+			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{BaseURL: tt.baseURL}, discardLogger())
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("NewServer(BaseURL %q) error = %v, wantErr %v", tt.baseURL, err, tt.wantErr)
 			}
@@ -292,7 +235,7 @@ func TestNewServer_BadBaseURL(t *testing.T) {
 
 func TestNewServer_TrustsBaseURLOrigin(t *testing.T) {
 	t.Parallel()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{},
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{},
 		web.Options{BaseURL: "https://upw.example.net/"}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -314,7 +257,7 @@ func TestServe_ShutsDownOnCancel(t *testing.T) {
 	t.Parallel()
 	capture := newAddrCapture()
 	runs := []model.Run{{ID: 1, Job: "ingest", StartedAt: t0, FinishedAt: t0.Add(5 * time.Second), Status: model.RunSucceeded}}
-	s, err := web.NewServer(&fakeHealth{runs: runs}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(&fakeHealth{runs: runs}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -377,7 +320,7 @@ func TestServe_ClosesConnectionsAfterShutdownDeadline(t *testing.T) {
 	t.Parallel()
 	health := &blockingHealth{entered: make(chan struct{}), released: make(chan struct{})}
 	capture := newAddrCapture()
-	s, err := web.NewServer(health, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(health, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -441,7 +384,7 @@ func TestServe_ClosesConnectionsAfterShutdownDeadline(t *testing.T) {
 
 func TestServe_ListenError(t *testing.T) {
 	t.Parallel()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:not-a-port"}, discardLogger())
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:not-a-port"}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -488,7 +431,7 @@ func TestHostCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.listen+" "+tt.baseURL+" "+tt.host, func(t *testing.T) {
 			t.Parallel()
-			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{},
+			s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{},
 				web.Options{Listen: tt.listen, BaseURL: tt.baseURL}, discardLogger())
 			if err != nil {
 				t.Fatalf("NewServer() error = %v", err)
@@ -508,7 +451,7 @@ func TestHostCheck(t *testing.T) {
 func TestHostCheck_RejectionKeepsSecurityHeaders(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:8080"},
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:8080"},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -557,7 +500,7 @@ func TestHostCheck_RebindingShape(t *testing.T) {
 func TestServe_PortZeroAllowsActualAddress(t *testing.T) {
 	t.Parallel()
 	capture := newAddrCapture()
-	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
+	s, err := web.NewServer(&fakeHealth{}, &fakeFindings{}, &fakeActions{}, &fakeTimeline{}, web.Options{Listen: "127.0.0.1:0"}, slog.New(capture))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}

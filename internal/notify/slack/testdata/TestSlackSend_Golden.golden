@@ -1,0 +1,165 @@
+{
+  "text": "upstreamwatch — 2026-11-18 — 18 new, 5 changed",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "upstreamwatch — 2026-11-18 — 18 new, 5 changed"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] high  GHSA-xxxx  &lt;https://evil|click&gt; &amp; &lt;!channel&gt;*\nR&amp;D *note* _here_\na &gt; b &lt; c\n<https://upw.example.com/f/1|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4002  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/2|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4003  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/3|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4004  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/4|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4005  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/5|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4006  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/6|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4007  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/7|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4008  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/8|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4009  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/9|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4010  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/10|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4011  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/11|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4012  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/12|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4013  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/13|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4014  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/14|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4015  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/15|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4016  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/16|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4017  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/17|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[A] medium  GO-2026-4018  pkg:golang/example.com/lib 1.0.0*\nfixed in 1.0.1\n<https://upw.example.com/f/18|Open>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[I] affects (0.82)  example-org/example-lib#19*"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*[I] affects (0.82)  example-org/example-lib#20*"
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "Open: 23, acked: 1, snoozed: 0."
+        },
+        {
+          "type": "mrkdwn",
+          "text": "… and 3 more https://upw.example.com/"
+        }
+      ]
+    }
+  ]
+}

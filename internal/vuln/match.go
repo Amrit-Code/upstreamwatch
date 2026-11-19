@@ -47,8 +47,11 @@ func evaluate(adv model.Advisory, aff model.AffectedPackage, iv model.DepInterva
 	rangeMatched := false
 	fixed := ""
 	gitOnly := len(aff.Ranges) > 0
-	pinValid := hasScheme && scheme.valid(v)
+	actionSHA := model.PURLType(purl) == "githubactions" && isCommitSHA(v)
+	pinValid := hasScheme && !actionSHA && scheme.valid(v)
 	switch {
+	case actionSHA:
+		notes = append(notes, "commit SHA pin not comparable to version ranges; ranges not evaluated")
 	case !hasScheme:
 		notes = append(notes, fmt.Sprintf("no version scheme for package type %q; ranges not evaluated", model.PURLType(purl)))
 	case !pinValid:

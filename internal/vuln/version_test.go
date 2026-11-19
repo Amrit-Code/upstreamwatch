@@ -22,7 +22,12 @@ func TestNormalizeVersion(t *testing.T) {
 		{"toolchain release candidate kept", toolchainPURL, "1.26rc1", "1.26rc1", true},
 		{"pypi unchanged", "pkg:pypi/example-lib", "1.0rc1", "1.0rc1", true},
 		{"npm keeps v", "pkg:npm/example-lib", "v1.2.3", "v1.2.3", true},
-		{"actions unchanged", "pkg:githubactions/example-org/action", "v4", "v4", true},
+		{"actions major tag floats", "pkg:githubactions/example-org/action", "v4", "4.0.0", false},
+		{"actions minor tag floats", "pkg:githubactions/example-org/action", "v4.1", "4.1.0", false},
+		{"actions full tag exact", "pkg:githubactions/example-org/action", "v4.1.2", "4.1.2", true},
+		{"actions tag without v floats", "pkg:githubactions/example-org/action", "4", "4.0.0", false},
+		{"actions commit SHA exact", "pkg:githubactions/example-org/action", "0123456789abcdef0123456789abcdef01234567", "0123456789abcdef0123456789abcdef01234567", true},
+		{"actions branch exact", "pkg:githubactions/example-org/action", "main", "main", true},
 		{"empty", "pkg:golang/github.com/example-org/lib", "", "", false},
 		{"empty toolchain", toolchainPURL, "", "", false},
 	}

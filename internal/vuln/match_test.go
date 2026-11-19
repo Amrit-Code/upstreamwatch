@@ -13,6 +13,8 @@ const (
 	pypiLib   = "pkg:pypi/example-lib"
 	actionPkg = "pkg:githubactions/example-org/action"
 	dockerImg = "pkg:docker/example-org/image"
+	sha       = "0123456789abcdef0123456789abcdef01234567"
+	otherSHA  = "89abcdef0123456789abcdef0123456789abcdef"
 )
 
 func intro(v string) model.RangeEvent { return model.RangeEvent{Introduced: v} }
@@ -32,7 +34,7 @@ func gitRange() model.AffectedRange {
 	return model.AffectedRange{
 		Type:   model.RangeGit,
 		Repo:   "https://github.com/example-org/example-server",
-		Events: []model.RangeEvent{intro("0"), fix("0123456789abcdef0123456789abcdef01234567")},
+		Events: []model.RangeEvent{intro("0"), fix(sha)},
 	}
 }
 
@@ -79,6 +81,9 @@ func TestEvaluate(t *testing.T) {
 	)
 	rangeAndList := entry(goLib, []string{"1.2.2"}, semverRange(intro("0"), fix("1.2.3")))
 	action := entry(actionPkg, nil, ecosystemRange(intro("0"), fix("4.1.0")))
+	actionMajor := entry(actionPkg, nil, ecosystemRange(intro("4.0.0"), fix("4.1.0")))
+	actionMinor := entry(actionPkg, nil, ecosystemRange(intro("4.0.0"), fix("4.2.0")))
+	actionSHA := entry(actionPkg, []string{sha}, ecosystemRange(intro("0"), fix("4.2.0")))
 	docker := entry(dockerImg, []string{"1.0.0"}, ecosystemRange(intro("0"), fix("2.0.0")))
 	badPin := entry(pypiLib, []string{"not valid"}, ecosystemRange(intro("0"), fix("2.0")))
 
@@ -253,6 +258,71 @@ func TestEvaluate(t *testing.T) {
 			name: "github action tag compared without v",
 			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: action, iv: pinned(actionPkg, "v4.0.0"),
 			want: matchResult{affected: true, fixedVersion: "4.1.0", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 4.1.0, exact pin"},
+		},
+		{
+			name: "action major tag v4 floats, medium",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionMajor, iv: pinned(actionPkg, "v4"),
+			want: matchResult{affected: true, fixedVersion: "4.1.0", confidence: model.ConfidenceMedium, reason: "native GHSA record, fixed in 4.1.0, action v4 treated as 4.0.0"},
+		},
+		{
+			name: "action minor tag v4.1 at the fix is not affected",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionMajor, iv: pinned(actionPkg, "v4.1"),
+			want: matchResult{reason: "4.1.0 outside every evaluated range and not on the versions list"},
+		},
+		{
+			name: "action minor tag v4.1 floats, medium",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionMinor, iv: pinned(actionPkg, "v4.1"),
+			want: matchResult{affected: true, fixedVersion: "4.2.0", confidence: model.ConfidenceMedium, reason: "native GHSA record, fixed in 4.2.0, action v4.1 treated as 4.1.0"},
+		},
+		{
+			name: "action full tag v4.1.2 is exact, high",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionMinor, iv: pinned(actionPkg, "v4.1.2"),
+			want: matchResult{affected: true, fixedVersion: "4.2.0", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 4.2.0, exact pin"},
+		},
+		{
+			name: "action SHA pin on the versions list, ranges skipped",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionSHA, iv: pinned(actionPkg, sha),
+			want: matchResult{affected: true, confidence: model.ConfidenceLow, reason: "matched on the versions list; commit SHA pin not comparable to version ranges; ranges not evaluated"},
+		},
+		{
+			name: "action SHA pin not listed, ranges skipped",
+			adv:  adv("GHSA-jjjj-kkkk-llll"), aff: actionSHA, iv: pinned(actionPkg, otherSHA),
+			want: matchResult{reason: otherSHA + " outside every evaluated range and not on the versions list; commit SHA pin not comparable to version ranges; ranges not evaluated"},
+		},
+		{
+			name: "cargo scheme",
+			adv:  adv("RUSTSEC-2026-0001"), aff: entry("pkg:cargo/example-crate", nil, ecosystemRange(intro("0"), fix("1.2.3"))), iv: pinned("pkg:cargo/example-crate", "1.2.0"),
+			want: matchResult{affected: true, fixedVersion: "1.2.3", confidence: model.ConfidenceHigh, reason: "native RUSTSEC record, fixed in 1.2.3, exact pin"},
+		},
+		{
+			name: "gem scheme",
+			adv:  adv("GHSA-gem0-0000-0000"), aff: entry("pkg:gem/example-gem", nil, ecosystemRange(intro("1.0.0"), fix("2.0.0"))), iv: pinned("pkg:gem/example-gem", "1.9.9"),
+			want: matchResult{affected: true, fixedVersion: "2.0.0", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 2.0.0, exact pin"},
+		},
+		{
+			name: "nuget scheme",
+			adv:  adv("GHSA-nuge-0000-0000"), aff: entry("pkg:nuget/Example.Lib", nil, ecosystemRange(intro("0"), fix("4.0.1"))), iv: pinned("pkg:nuget/Example.Lib", "4.0.0"),
+			want: matchResult{affected: true, fixedVersion: "4.0.1", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 4.0.1, exact pin"},
+		},
+		{
+			name: "maven scheme",
+			adv:  adv("GHSA-mave-0000-0000"), aff: entry("pkg:maven/org.example/example-lib", nil, ecosystemRange(intro("2.0"), fix("2.17.1"))), iv: pinned("pkg:maven/org.example/example-lib", "2.14.1"),
+			want: matchResult{affected: true, fixedVersion: "2.17.1", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 2.17.1, exact pin"},
+		},
+		{
+			name: "composer scheme",
+			adv:  adv("GHSA-comp-0000-0000"), aff: entry("pkg:composer/example-org/lib", nil, ecosystemRange(intro("0"), fix("5.4.2"))), iv: pinned("pkg:composer/example-org/lib", "5.4.1"),
+			want: matchResult{affected: true, fixedVersion: "5.4.2", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 5.4.2, exact pin"},
+		},
+		{
+			name: "pub scheme",
+			adv:  adv("GHSA-pub0-0000-0000"), aff: entry("pkg:pub/example_lib", nil, ecosystemRange(intro("0"), fix("1.0.1"))), iv: pinned("pkg:pub/example_lib", "1.0.0"),
+			want: matchResult{affected: true, fixedVersion: "1.0.1", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 1.0.1, exact pin"},
+		},
+		{
+			name: "hex scheme",
+			adv:  adv("GHSA-hex0-0000-0000"), aff: entry("pkg:hex/example_lib", nil, ecosystemRange(intro("0"), fix("0.6.1"))), iv: pinned("pkg:hex/example_lib", "0.6.0"),
+			want: matchResult{affected: true, fixedVersion: "0.6.1", confidence: model.ConfidenceHigh, reason: "native GHSA record, fixed in 0.6.1, exact pin"},
 		},
 		{
 			name: "package type without a scheme falls back to the versions list",

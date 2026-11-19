@@ -83,3 +83,67 @@ Outside scope:
 Concerns:
 - GitHub Actions pins such as `v4` are floating major tags but normalizeVersion returns them as exact (requirement 1 says every non-Go version is exact), so a match on one can be high, and how the semver scheme orders a one-component `4` against `4.1.0` was not tested here. Worth a ruling before the vulns job relies on it.
 - The schemeFor branches for cargo, gem, nuget, maven, composer, pub and hex are not exercised by tests here (the full suite in WO-14 can cover them).
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-06-vuln-matching.md (plus the lead's ruling on GitHub Actions versions)
+Files changed:
+- internal/vuln/version.go (modified: `normalizeVersion` sends `pkg:githubactions/...` to the new `normalizeActionVersion`; new `isCommitSHA`)
+- internal/vuln/match.go (modified: a GitHub Actions commit SHA pin skips every range with a note and matches only through the versions list)
+- internal/vuln/version_test.go (modified: rows for v4, v4.1, v4.1.2, 4, a SHA and a branch name)
+- internal/vuln/match_test.go (modified: rows for v4 against `introduced 4.0.0, fixed 4.1.0` (affected, medium), v4.1 against the same range (not affected), v4.1 and v4.1.2 against `introduced 4.0.0, fixed 4.2.0` (medium and high), a SHA on the versions list and one not on it, and one row each for cargo, gem, nuget, maven, composer, pub and hex)
+- .claude/plans/m2/WO-06-vuln-matching.report.md (modified: this section)
+
+Commands run:
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/config	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/extract	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/extract/unity	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/findings	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	7.789s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/httpx	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/ingest	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/issues/github	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/model	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/ops	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/query	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/report	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/testutil/gitrepo	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/timeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.090s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=1 -run 'TestEvaluate|TestExposureWindow|TestNormalizeVersion' ./internal/vuln/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.097s
+- `go test -race -count=1 -coverprofile=cover1.out ./internal/vuln/` -> exit 0
+  coverage: 96.5% of statements (schemeFor 100%, normalizeActionVersion 100%, evaluate 95.8%, evalRange 94.3%)
+- `git status --porcelain` -> exit 0 (before this section was appended)
+   M internal/vuln/match.go
+   M internal/vuln/match_test.go
+   M internal/vuln/version.go
+   M internal/vuln/version_test.go
+
+Decisions:
+- A GitHub Actions version is floating only when, after one leading "v" is stripped, every dot component is all digits and there are fewer than three (`v4`, `v4.1`, also `4`). Other refs (`v4.1.2`, `v4.1.2-beta`, a branch name such as `main`) come back stripped of the "v" and exact, as before.
+- A commit SHA means exactly 40 hex digits, either case, returned unchanged. It is detected only for `pkg:githubactions/...`, as the ruling says. The note reads `commit SHA pin not comparable to version ranges; ranges not evaluated`.
+- The floating reason uses the same wording as the toolchain one, with the package URL's last path segment as the name (`action v4 treated as 4.0.0` for `pkg:githubactions/example-org/action`).
+- Versions-list matching still normalises both sides the same way, so a floating `v4` matches a listed `4.0.0` or `4`, with confidence low.
+
+Outside scope: none new (the two items from the first round still stand).
+Concerns: none (both first-round concerns are settled by the ruling and the new rows).

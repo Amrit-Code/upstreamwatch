@@ -1,6 +1,7 @@
 package vuln
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/git-pkgs/vers"
@@ -18,7 +19,11 @@ func normalizeVersion(purl, version string) (v string, exact bool) {
 	if version == "" {
 		return "", false
 	}
-	if model.PURLType(purl) != "golang" {
+	switch model.PURLType(purl) {
+	case "golang":
+	case "githubactions":
+		return normalizeActionVersion(version)
+	default:
 		return version, true
 	}
 	v = strings.TrimPrefix(version, "v")
@@ -32,6 +37,39 @@ func normalizeVersion(purl, version string) (v string, exact bool) {
 		return v + ".0", false
 	}
 	return v, true
+}
+
+// normalizeActionVersion normalises a GitHub Actions ref: one leading "v" is
+// dropped, and a numeric tag with fewer than three components (v4, v4.1),
+// which floats to the newest release of that line, is completed with ".0"
+// components and reported as not exact. A commit SHA is returned unchanged.
+func normalizeActionVersion(version string) (v string, exact bool) {
+	if isCommitSHA(version) {
+		return version, true
+	}
+	v = strings.TrimPrefix(version, "v")
+	parts := strings.Split(v, ".")
+	if len(parts) >= 3 || slices.ContainsFunc(parts, func(p string) bool { return !isDigits(p) }) {
+		return v, true
+	}
+	for len(parts) < 3 {
+		parts = append(parts, "0")
+	}
+	return strings.Join(parts, "."), false
+}
+
+// isCommitSHA reports whether s is a full 40-hex-digit git commit SHA.
+func isCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // isDigits reports whether s is non-empty and only ASCII digits.

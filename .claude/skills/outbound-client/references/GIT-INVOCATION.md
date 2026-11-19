@@ -5,7 +5,7 @@
 ## Building the command
 
 - `exec.CommandContext(ctx, gitPath, args...)` with an argument slice. No shell, no `sh -c`, no joining values into one string. `gitPath` is resolved once at startup with `exec.LookPath`; input never chooses the binary.
-- Put `--` before user-influenced URLs and paths in commands where it ends options: `git clone --bare -- <url> <dir>`, `git ls-remote --symref -- <url> HEAD`.
+- Put `--` before user-influenced URLs and paths in commands where it ends options: `git ls-remote --symref -- <url> HEAD`.
 - In commands where `--` introduces pathspecs (`git log`), put `--end-of-options` before revisions and `--` before pathspecs: `git log --first-parent ... --end-of-options <range> -- <pathspecs>`. The same applies to `git fetch --end-of-options <remote> <refspec>`.
 - Branch names, whether from config or from `ls-remote`, are rejected if they start with `-` or if `git check-ref-format --branch <name>` rejects them.
 - Slugs become paths (`<data_dir>/repos/<slug>.git`). Validate the slug as lowercase letters, digits and hyphens before building the path, so `../` cannot appear.
@@ -52,7 +52,7 @@ git dials for itself, so the httpx dialer never sees its connections. Before eve
 
 ## Repository shape and limits
 
-- Bare clones only: `git clone --bare -- <url> <dir>`, with no `--filter` (PLAN.md's `--filter=none` is not a valid filter spec; the intent is a full clone). Directory mode 700.
+- Bare clones only, created with `git init --bare <dir>` and filled by `git fetch --no-tags --end-of-options <url> +refs/heads/<b>:refs/heads/<b>` (decision of 2026-11-19 in `docs/decisions.md`): no `git clone`, no remote in the config, no `--filter` (PLAN.md's `--filter=none` is not a valid filter spec; the intent is a full history of the branch). A later fetch goes to a staging ref and moves the branch only after the size check passes. Directory mode 700. Every path git sees is absolute.
 - No working tree and no checkout, ever. Source files for the usage index are read at HEAD with `ls-tree` and `cat-file` through `GitSource.ListFiles` and `ReadBlobs`.
 - Every invocation runs under a context deadline from config; clone gets a longer one than fetch.
 - Size cap `gitsrc.max_clone_mb` (default 2048). git has no flag for it: watch the destination directory's size while clone or fetch runs, cancel the context when it passes the cap, delete a partial clone, and return an error the job turns into a `job_failure`.

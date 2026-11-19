@@ -10,10 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"testing/synctest"
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -615,6 +618,208 @@ func TestInTx_Nested(t *testing.T) {
 			t.Errorf("runs = %d, want 0", got)
 		}
 	})
+}
+
+// holdQueue starts an InTx on db that writes a run for job, signals on the
+// returned entered channel and then holds the write queue until release is
+// closed. The InTx result arrives on done.
+func holdQueue(t *testing.T, db *DB, job string, release <-chan struct{}) (entered <-chan struct{}, done <-chan error) {
+	t.Helper()
+	in := make(chan struct{})
+	out := make(chan error, 1)
+	go func() {
+		out <- db.InTx(t.Context(), func(tx *DB) error {
+			if _, err := tx.StartRun(t.Context(), job, t0); err != nil {
+				return err
+			}
+			close(in)
+			<-release
+			return nil
+		})
+	}()
+	return in, out
+}
+
+// checkQueueWaitErr fails the test unless err wraps target and came from
+// InTx giving up its wait for the write queue, not from BeginTx: a caller
+// that skipped the queue fails in BEGIN with the same context error but
+// without the queue in its message.
+func checkQueueWaitErr(t *testing.T, err, target error) {
+	t.Helper()
+	if !errors.Is(err, target) {
+		t.Errorf("queued InTx error = %v, want one wrapping %v", err, target)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wait for write queue") {
+		t.Errorf("queued InTx error = %v, want it to come from the write queue wait", err)
+	}
+}
+
+func TestDB_InTx_ContextCancelledWhileQueued(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled after queueing", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			db := newTestDB(t)
+			release := make(chan struct{})
+			entered, firstDone := holdQueue(t, db, "first", release)
+			<-entered
+
+			ctx, cancel := context.WithCancel(t.Context())
+			var ran bool
+			secondDone := make(chan error, 1)
+			go func() {
+				secondDone <- db.InTx(ctx, func(tx *DB) error {
+					ran = true
+					_, err := tx.StartRun(ctx, "second", t0)
+					return err
+				})
+			}()
+			synctest.Wait() // the second InTx is parked on the queue
+			cancel()
+
+			checkQueueWaitErr(t, <-secondDone, context.Canceled)
+			if ran {
+				t.Errorf("queued InTx ran its function after its context was cancelled")
+			}
+
+			close(release)
+			if err := <-firstDone; err != nil {
+				t.Fatalf("holding InTx error = %v", err)
+			}
+			if got := count(t, db, "SELECT COUNT(*) FROM runs WHERE job = 'first'"); got != 1 {
+				t.Errorf("first runs after release = %d, want 1", got)
+			}
+			if got := count(t, db, "SELECT COUNT(*) FROM runs WHERE job = 'second'"); got != 0 {
+				t.Errorf("second runs = %d, want 0", got)
+			}
+			// The queue is free again.
+			if err := db.InTx(t.Context(), func(tx *DB) error {
+				_, err := tx.StartRun(t.Context(), "third", t0)
+				return err
+			}); err != nil {
+				t.Errorf("InTx after release error = %v", err)
+			}
+		})
+	})
+
+	t.Run("already cancelled while queue is held", func(t *testing.T) {
+		t.Parallel()
+		db := newTestDB(t)
+		release := make(chan struct{})
+		entered, firstDone := holdQueue(t, db, "first", release)
+		<-entered
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		// The queue is held, so the only ready case is the cancelled context.
+		start := time.Now()
+		err := db.InTx(ctx, func(*DB) error {
+			t.Errorf("InTx ran its function with a cancelled context")
+			return nil
+		})
+		// Giving up the queue wait is immediate; a caller that reached
+		// BEGIN IMMEDIATE could sit in the 5 s busy handler.
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("InTx with a cancelled context returned after %v, want well under the busy timeout", elapsed)
+		}
+		checkQueueWaitErr(t, err, context.Canceled)
+
+		close(release)
+		if err := <-firstDone; err != nil {
+			t.Fatalf("holding InTx error = %v", err)
+		}
+	})
+
+	t.Run("deadline exceeded", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			db := newTestDB(t)
+			release := make(chan struct{})
+			entered, firstDone := holdQueue(t, db, "first", release)
+			<-entered
+
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			err := db.InTx(ctx, func(*DB) error {
+				t.Errorf("InTx ran its function after its deadline")
+				return nil
+			})
+			checkQueueWaitErr(t, err, context.DeadlineExceeded)
+
+			close(release)
+			if err := <-firstDone; err != nil {
+				t.Fatalf("holding InTx error = %v", err)
+			}
+		})
+	})
+}
+
+func TestDB_InTx_QueueServesArrivalOrder(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		db := newTestDB(t)
+		release := make(chan struct{})
+		entered, firstDone := holdQueue(t, db, "holder", release)
+		<-entered
+
+		const waiters = 5
+		var (
+			mu    sync.Mutex
+			order []int
+			wg    sync.WaitGroup
+		)
+		for i := range waiters {
+			wg.Go(func() {
+				err := db.InTx(t.Context(), func(tx *DB) error {
+					mu.Lock()
+					order = append(order, i)
+					mu.Unlock()
+					_, err := tx.StartRun(t.Context(), fmt.Sprintf("waiter-%d", i), t0)
+					return err
+				})
+				if err != nil {
+					t.Errorf("waiter %d InTx error = %v", i, err)
+				}
+			})
+			synctest.Wait() // waiter i is parked before waiter i+1 arrives
+		}
+		close(release)
+		if err := <-firstDone; err != nil {
+			t.Fatalf("holding InTx error = %v", err)
+		}
+		wg.Wait()
+
+		want := []int{0, 1, 2, 3, 4}
+		if !slices.Equal(order, want) {
+			t.Errorf("waiters served in order %v, want %v", order, want)
+		}
+	})
+}
+
+func TestDB_InTx_QueueReleasedAfterErrorAndPanic(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	boom := errors.New("boom")
+	if err := db.InTx(t.Context(), func(*DB) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("InTx() error = %v, want boom", err)
+	}
+	func() {
+		defer func() {
+			if p := recover(); p != "kaboom" {
+				t.Errorf("recovered = %v, want kaboom", p)
+			}
+		}()
+		_ = db.InTx(t.Context(), func(*DB) error { panic("kaboom") })
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := db.InTx(ctx, func(tx *DB) error {
+		_, err := tx.StartRun(ctx, "after", t0)
+		return err
+	}); err != nil {
+		t.Errorf("InTx() after an error and a panic error = %v, want the queue free", err)
+	}
 }
 
 // runStarter is a consumer-declared interface, as a service would declare it.

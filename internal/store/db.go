@@ -31,9 +31,17 @@ type scanner interface {
 // DB is the database access layer. A *DB returned by InTx runs every method
 // inside that transaction.
 type DB struct {
-	pool   *sql.DB
-	q      querier
-	inTx   bool
+	pool *sql.DB
+	q    querier
+	inTx bool
+	// writeQ is the write queue shared by every *DB derived from one Open: a
+	// channel with a buffer of one, held (one value in the buffer) for the life
+	// of an outermost InTx. A goroutine that cannot send parks on the channel's
+	// send queue, which the runtime serves first in, first out, and a receive
+	// hands the slot straight to the head of that queue, so a later arrival
+	// cannot overtake a waiter. Unlike sync.Mutex it can also be abandoned in a
+	// select when the caller's context ends.
+	writeQ chan struct{}
 	now    func() time.Time
 	logger *slog.Logger
 }
@@ -86,7 +94,7 @@ func Open(ctx context.Context, path string, logger *slog.Logger) (*DB, error) {
 	if journal != "wal" || fk != 1 {
 		return nil, errors.Join(fmt.Errorf("open store: pragmas not applied (journal_mode=%s, foreign_keys=%d)", journal, fk), pool.Close())
 	}
-	return &DB{pool: pool, q: pool, now: time.Now, logger: logger}, nil
+	return &DB{pool: pool, q: pool, writeQ: make(chan struct{}, 1), now: time.Now, logger: logger}, nil
 }
 
 // tightenDir sets dir to mode 0700 when it grants any permission to group or
@@ -112,10 +120,26 @@ func (db *DB) Close() error { return db.pool.Close() }
 // whose methods all run inside the transaction. InTx commits when fn returns
 // nil and rolls back when it returns an error or panics. Called on a *DB that
 // is already inside a transaction, it joins that transaction.
+//
+// Write transactions from one process take turns in arrival order: InTx waits
+// for the write queue before BEGIN and leaves it after commit or rollback, so
+// SQLite's busy timeout only covers writers in other processes. If ctx ends
+// while InTx waits, it returns an error wrapping ctx.Err() without opening a
+// transaction. fn must use only the tx it is given: an InTx on the outer *DB
+// from inside fn waits for its own transaction until ctx ends.
 func (db *DB) InTx(ctx context.Context, fn func(tx *DB) error) error {
 	if db.inTx {
 		return fn(db)
 	}
+	select {
+	case db.writeQ <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("begin transaction: wait for write queue: %w", ctx.Err())
+	}
+	// Registered before the rollback defer below, so it runs after it, also
+	// when fn panics.
+	defer func() { <-db.writeQ }()
+
 	sqlTx, err := db.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)

@@ -74,6 +74,22 @@ func (g *CLI) Sync(ctx context.Context, repo model.TargetRepo) (model.SyncResult
 	// One absolute path serves git, the size watch, cleanup and the result.
 	dir := filepath.Join(reposDir, repo.Slug+".git")
 	info, err := os.Stat(dir)
+	if err == nil && info.IsDir() {
+		// A directory that is not a bare repository (an interrupted
+		// removal, something written into it after one) would fail every
+		// fetch; it is removed so this sync starts the clone again.
+		valid, vErr := g.isBareRepo(ctx, dir)
+		if vErr != nil {
+			return model.SyncResult{}, fmt.Errorf("sync %s: %w", repo.Slug, vErr)
+		}
+		if !valid {
+			g.logger.Warn("git clone damaged, recreating it", "repo", repo.Slug)
+			if rmErr := os.RemoveAll(dir); rmErr != nil {
+				return model.SyncResult{}, fmt.Errorf("sync %s: remove damaged clone: %w", repo.Slug, rmErr)
+			}
+			info, err = nil, fs.ErrNotExist
+		}
+	}
 	var cloned bool
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -342,6 +358,20 @@ func (g *CLI) checkBranch(ctx context.Context, branch string) error {
 		return fmt.Errorf("branch %q not allowed: not a plain branch name", branch)
 	}
 	return nil
+}
+
+// isBareRepo reports whether dir holds a bare repository git can open. Any
+// exit status from git means it does not; failing to run git is an error.
+func (g *CLI) isBareRepo(ctx context.Context, dir string) (bool, error) {
+	out, err := g.output(ctx, invocation{gitDir: dir, args: []string{"rev-parse", "--is-bare-repository"}})
+	switch {
+	case err == nil:
+		return strings.TrimSpace(out) == "true", nil
+	case exitCode(err) > 0 && ctx.Err() == nil:
+		return false, nil
+	default:
+		return false, fmt.Errorf("check clone: %w", err)
+	}
 }
 
 // branchHead returns the commit refs/heads/<branch> points at in the clone at

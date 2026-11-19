@@ -233,3 +233,57 @@ Concerns: none
 ## Gate, fix round 2 (lead, 2026-11-19)
 
 CI on ubuntu-latest failed TestSync_IncrementalCapRemovesObjects (temp dir not empty: surviving git children) and TestIsAncestor_PrunedAfterForcePush (old commit not pruned by the test setup). Round 2: every git process (all built by g.command) now leads its own process group and cancellation SIGKILLs the group; the test setup is made robust. make check rerun on the Mac: exit 0. CI result recorded after the push.
+
+## Fix round 3
+
+Status: DONE
+Work order: .claude/plans/m1/WO-13-gitsrc-hardening.md (lead follow-up: two tests still failing on Linux CI)
+Worktree note: HEAD here is c297efa, not e0d6dbb. e0d6dbb is the merge of c297efa with WO-16 (store), so every gitsrc file is identical between the two. I did not move HEAD, because that is a git write.
+Files changed:
+- internal/gitsrc/cli.go (modified): `baseConfig` adds `gc.auto=0`, `gc.autoDetach=false` and `maintenance.auto=false`. Every git invocation gets them, and so do the helpers git starts, because `-c` values reach child processes through GIT_CONFIG_PARAMETERS.
+- internal/gitsrc/sync.go (modified): when the clone path exists and is a directory, `Sync` first runs the new `isBareRepo` (`rev-parse --is-bare-repository` on the clone). Any git exit status, or output other than `true`, means the directory is not a usable bare repository: `Sync` logs Warn `git clone damaged, recreating it` (attribute `repo`), removes the directory and does a first sync (`Cloned: true`). Failing to run git at all is still an error.
+- internal/gitsrc/sync_test.go (modified): `TestSync_FetchKeepsPacks` now also asserts the three settings on every gitsrc invocation, and that at least 6 were recorded. New `TestSync_HealsDamagedClone` covers three kinds of damage: emptied with a stray `gc.pid`, `HEAD` missing, `objects` missing.
+- internal/gitsrc/history_test.go (modified): the `TestIsAncestor_PrunedAfterForcePush` setup now uses `collectUnreachable`. If the old commit survives, the failure message lists refs and object files.
+- .claude/plans/m1/WO-13-gitsrc-hardening.report.md (modified)
+
+Reasoning about Linux git:
+- Both CI failures fit one cause: automatic maintenance started by `git fetch` (`git maintenance run --auto`, detached by default). A detached child calls setsid, so the round-2 process-group kill cannot reach it, and it keeps running after gitsrc returns. The Linux runner's git evidently decided auto maintenance was due on this repository shape, and the Mac git (2.52) did not.
+  - IncrementalCap failure: the fetch completes, we find the clone over the cap, prune it, and remove it. Meanwhile the detached maintenance writes into the path (`gc.pid`, a pack, logs) and recreates the directory without HEAD, so the next fetch fails with "not a git repository".
+  - Force-push test, round 2: my setup deleted the files the first sync wrote, and ignored ErrNotExist. A background repack that had already merged both packs into a new one would explain both the missing files and the old commit surviving in a file I never recorded. Round 1's repack plus prune could likewise lose a race with a concurrent maintenance repack.
+- With all three settings, fetch starts no auto gc or maintenance, so no process outlives the invocation and the pack layout after a fetch is fixed (one kept pack per fetch).
+- `isBareRepo` makes a clone damaged by anything else (an interrupted removal, a crash) heal on the next run instead of failing every run.
+- Force-push setup, as the lead specified, run through `gitrepo.Git` (the isolated environment: no system or global config) with the same three settings: `reflog expire --expire=now --expire-unreachable=now --all`; delete every ref outside `refs/heads/`; `repack -a -d` (drops unreachable objects from packs; `-a` without `-A`/`-k` does not loosen or keep them); then `prune --expire=now` for loose ones. The test then checks with `cat-file --batch-all-objects` that the old commit is gone and the new head is present, before calling `IsAncestor`.
+
+Commands run:
+- `go test -count=1 -run Heals ./internal/gitsrc/` with the heal branch temporarily disabled (`if !valid && false`) -> exit 1. All three subtests failed with CI's error:
+  sync_test.go:407: Sync() of a damaged clone error = sync app: run git fetch: exit status 128: fatal: not a git repository: '.../003/repos/app.git'
+      delete staging ref: run git update-ref: exit status 128: fatal: not a git repository: '.../003/repos/app.git'
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	0.413s
+  (restored afterwards)
+- `go test -race -count=3 -run 'IsAncestor|Heals|FetchKeepsPacks|IncrementalCap|SizeCap' -v ./internal/gitsrc/` -> exit 0. Every listed test passed in all three runs, including `TestIsAncestor_PrunedAfterForcePush`, `TestSync_HealsDamagedClone`, `TestSync_IncrementalCapRemovesObjects` and `TestSync_SizeCapKillsProcessGroup`.
+  (The first run of this command failed in `TestSync_FetchKeepsPacks`: the fixture's own `git commit`, `add` and `rev-parse`, which run through the stand-in, lack gitsrc's config. The assertion is now limited to invocations that start with gitsrc's base config.)
+- `gofmt -l .` -> exit 0 (no output)
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	8.415s
+  ...
+  OK - No warnings found
+  ==> import-check
+- `go test -race -count=1 -v ./internal/gitsrc/` -> exit 0; 36 top-level PASS lines, no FAIL
+- `GOOS=linux go test -c -o /dev/null ./internal/gitsrc/` -> exit 0 (linux-compile-ok)
+- `git status --porcelain` -> exit 0
+   M internal/gitsrc/cli.go
+   M internal/gitsrc/history_test.go
+   M internal/gitsrc/sync.go
+   M internal/gitsrc/sync_test.go
+  (plus this report file)
+
+Decisions:
+- "Not a valid bare repository" means `rev-parse --is-bare-repository` exits non-zero or prints anything other than `true`. git's own repository check requires HEAD, `objects/` and `refs/`, so it covers the cases the lead named.
+- A Warn log line, `git clone damaged, recreating it` with attribute `repo`, records the heal, so a clone that keeps getting damaged is visible to the operator. It is recoverable trouble under the go-code levels. It is the only new log line.
+- A clone path that is a regular file still returns the existing "is not a directory" error and is not removed. The lead asked about damaged clone directories only.
+- I used the three settings exactly as specified. I did not add `maintenance.autoDetach`, because with `maintenance.auto=false` nothing is started for it to affect.
+
+Outside scope:
+- docs (`docs/external-sources.md` or the GIT-INVOCATION reference) should list the new per-invocation settings and the damaged-clone heal. That is for docs-sync and the lead.
+
+Concerns: none

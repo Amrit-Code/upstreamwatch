@@ -356,6 +356,70 @@ func TestSync_LaterFetchFailureKeepsClone(t *testing.T) {
 	}
 }
 
+// TestSync_HealsDamagedClone damages an existing clone so it is no longer a
+// repository git can open; the next sync recreates it instead of failing on
+// every run.
+func TestSync_HealsDamagedClone(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		damage func(t *testing.T, dir string)
+	}{
+		{"emptied with a stray file", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "gc.pid"), []byte("1 example-host\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"HEAD missing", func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"objects missing", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(filepath.Join(dir, "objects")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			up := gitrepo.New(t, "main")
+			up.Write("go.mod", "module example.com/app\n")
+			up.Commit("first", day(1))
+			g := gitsrc.New(testOptions(t), discard())
+			repo := model.TargetRepo{Slug: "app", URL: up.URL(), Branch: "main"}
+			res, err := g.Sync(t.Context(), repo)
+			if err != nil {
+				t.Fatalf("first Sync() error = %v", err)
+			}
+			tt.damage(t, res.ClonePath)
+			second := up.Commit("second", day(2))
+
+			got, err := g.Sync(t.Context(), repo)
+			if err != nil {
+				t.Fatalf("Sync() of a damaged clone error = %v", err)
+			}
+			want := model.SyncResult{Branch: "main", Head: second, ClonePath: res.ClonePath, Cloned: true}
+			if got != want {
+				t.Errorf("Sync() of a damaged clone = %+v, want %+v", got, want)
+			}
+			if bare := gitrepo.Git(t, res.ClonePath, "rev-parse", "--is-bare-repository"); bare != "true" {
+				t.Errorf("rev-parse --is-bare-repository = %q, want true", bare)
+			}
+			if _, err := os.Stat(filepath.Join(res.ClonePath, "gc.pid")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("stray file survived the rebuild (stat error %v)", err)
+			}
+		})
+	}
+}
+
 func TestSync_RejectsSlugAndBranch(t *testing.T) {
 	t.Parallel()
 	up := gitrepo.New(t, "main")
@@ -641,8 +705,21 @@ func TestSync_FetchKeepsPacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fetches := 0
+	fetches, ours := 0, 0
 	for line := range strings.Lines(string(data)) {
+		// The fixture's own commits run through the stand-in too; gitsrc's
+		// invocations are the ones that start with its base config.
+		if !strings.HasPrefix(line, "-c protocol.allow=never ") {
+			continue
+		}
+		ours++
+		// Every invocation, fetch or not, turns off automatic gc and
+		// maintenance, which could otherwise run detached after it.
+		for _, want := range []string{"-c gc.auto=0", "-c gc.autoDetach=false", "-c maintenance.auto=false"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("git invocation lacks %q: %s", want, line)
+			}
+		}
 		if !strings.Contains(line, " fetch ") {
 			continue
 		}
@@ -652,6 +729,9 @@ func TestSync_FetchKeepsPacks(t *testing.T) {
 				t.Errorf("fetch invocation lacks %q: %s", want, line)
 			}
 		}
+	}
+	if ours < 6 {
+		t.Errorf("recorded %d gitsrc invocations, want at least 6 (init, check-ref-format, fetch, update-ref, rev-parse, rev-parse --is-bare-repository)", ours)
 	}
 	if fetches != 2 {
 		t.Errorf("recorded %d fetch invocations, want 2 (first and later sync)", fetches)

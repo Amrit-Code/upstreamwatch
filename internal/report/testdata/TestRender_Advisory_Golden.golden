@@ -1,0 +1,38 @@
+[
+  {
+    "finding_id": 1842,
+    "kind": "advisory",
+    "score": 114,
+    "tag": "[A]",
+    "headline": "high  GO-2026-4866  pkg:golang/toolchain 1.26.0  (repo: example-server)",
+    "lines": [
+      "net/http: request [31m smuggling via chunked encoding [0m Fixed in 1.26.4. KEV: no. EPSS 0.12 (p71).",
+      "Exposed since 2026-05-15 (go.mod) — confidence high (pinned since 2026-02-01)"
+    ],
+    "url": "https://upw.example.test/f/1842"
+  },
+  {
+    "finding_id": 1900,
+    "kind": "advisory",
+    "score": 75,
+    "tag": "[A]",
+    "headline": "unknown  GHSA-aaaa-bbbb-cccc  pkg:npm/example-parser 2.0.1  (repo: example-web)",
+    "lines": [
+      "Parsing a crafted document panics. KEV: yes.",
+      "Exposed 2025-06-01 to 2025-10-01 (web/package-lock.json, no longer pinned) — confidence low",
+      "Now: unknown 30; KEV +30; direct +10; confidence low -25"
+    ],
+    "url": "https://upw.example.test/f/1900"
+  },
+  {
+    "finding_id": 1950,
+    "kind": "advisory",
+    "score": 40,
+    "tag": "[A]",
+    "headline": "medium  PYSEC-2026-1  pkg:pypi/example-lib  (repo: example-tools)",
+    "lines": [
+      "ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab a… KEV: no."
+    ],
+    "url": "https://upw.example.test/f/1950"
+  }
+]

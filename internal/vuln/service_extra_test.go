@@ -350,14 +350,34 @@ func TestRun_FetchSetKeepsNewestModified(t *testing.T) {
 		queryModified time.Time
 		deltaModified time.Time
 	}{
-		{"delta newer than the query ref", day(9), at(48)},
-		{"query ref newer than the delta", at(48), at(30)},
+		// After the first run advLib is stored at at(10) and the Go delta
+		// cursor is at(0). In each case only one of the two refs is after the
+		// stored time (both are after the cursor, so the delta returns its
+		// line), so the fetch happens only if the union keeps the newer of
+		// the two, whichever of them arrives first.
+		{"delta newer than the query ref", at(10), at(48)},
+		{"query ref newer than the delta", at(48), at(5)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t, nil, nil, vuln.Options{})
+			stored := h.src.records[advLib]
+			stored.Modified = at(10)
+			h.src.records[advLib] = stored
+			v120 := model.PackageVersion{PURL: libPURL, Version: "v1.2.0"}
+			for i, r := range h.src.queryRefs[v120] {
+				if r.ID == advLib {
+					h.src.queryRefs[v120][i].Modified = at(10)
+				}
+			}
 			h.run(t, model.Scope{})
+			if got := h.store.advisories[advLib].Modified; !got.Equal(at(10)) {
+				t.Fatalf("stored %s modified = %v after the first run, want %v", advLib, got, at(10))
+			}
+			if got := h.store.kv[cursorKV]; got != "2026-04-01T00:00:00Z" {
+				t.Fatalf("kv[%s] = %q after the first run, want at(0)", cursorKV, got)
+			}
 			h.src.resetCalls()
 
 			changed := h.src.records[advLib]

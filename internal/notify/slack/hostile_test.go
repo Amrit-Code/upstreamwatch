@@ -58,7 +58,12 @@ func unescapeSlack(t *testing.T, field, s string) string {
 	return b.String()
 }
 
-func TestSlackSend_HostileTextCannotMentionOrLink(t *testing.T) {
+// TestSlackSend_HostileTextCannotPingOrMaskLinks checks that upstream text
+// can neither ping anyone nor form a masked link: no '<' or '>' survives, so
+// no <@user>, <!channel> or <url|text> markup can open. Bare URLs, which
+// Slack auto-links with their real address, are out of scope for M2 per the
+// lead's ruling on WO-14 and go to the security review.
+func TestSlackSend_HostileTextCannotPingOrMaskLinks(t *testing.T) {
 	t.Parallel()
 	const findingURL = "https://upw.example.com/f/1"
 	for _, hostile := range hostileTexts {

@@ -63,7 +63,13 @@ func checkNeutralised(t *testing.T, field, s string) string {
 	return visible.String()
 }
 
-func TestDiscordSend_HostileTextCannotMentionOrLink(t *testing.T) {
+// TestDiscordSend_HostileTextCannotPingOrMaskLinks checks that upstream text
+// can neither ping anyone (every '@' is broken by a zero-width space, and
+// allowed_mentions is empty) nor form a masked markdown link (no unescaped
+// '[' or ']'). Bare URLs, which Discord auto-links with their real address,
+// and channel references such as <#123> are out of scope for M2 per the
+// lead's ruling on WO-14 and go to the security review.
+func TestDiscordSend_HostileTextCannotPingOrMaskLinks(t *testing.T) {
 	t.Parallel()
 	for _, hostile := range hostileTexts {
 		t.Run(hostile, func(t *testing.T) {

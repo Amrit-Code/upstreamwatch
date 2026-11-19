@@ -168,3 +168,63 @@ Concerns:
 - internal/store took 7.5 s under `make check` (the whole existing suite under -race). That is under the 10 s budget, but not by much as the store suite grows.
 
 Question or blocker: none
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-14-test-suites.md
+Files changed:
+- internal/vuln/service_extra_test.go (modified)
+- internal/notify/discord/hostile_test.go (modified)
+- internal/notify/slack/hostile_test.go (modified)
+- .claude/plans/m2/WO-14-test-suites.report.md (modified)
+
+Commands run:
+- `go test -count=1 -run TestRun_FetchSetKeepsNewestModified ./internal/vuln/` with a temporary "last wins" mutation in internal/vuln/service.go fetchAll (`if !ok || true {`) -> exit 1
+  ```
+  --- FAIL: TestRun_FetchSetKeepsNewestModified (0.00s)
+      --- FAIL: TestRun_FetchSetKeepsNewestModified/query_ref_newer_than_the_delta (0.00s)
+          service_extra_test.go:395: Fetch calls = [], want [GO-2026-0001] (one fetch, the newest time is after the stored one)
+  FAIL
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/vuln	0.244s
+  FAIL
+  ```
+- the same with a temporary "oldest wins" mutation (`if !ok || r.Modified.Before(it.modified) {`) -> exit 1
+  ```
+  --- FAIL: TestRun_FetchSetKeepsNewestModified (0.00s)
+      --- FAIL: TestRun_FetchSetKeepsNewestModified/query_ref_newer_than_the_delta (0.00s)
+          service_extra_test.go:395: Fetch calls = [], want [GO-2026-0001] (one fetch, the newest time is after the stored one)
+      --- FAIL: TestRun_FetchSetKeepsNewestModified/delta_newer_than_the_query_ref (0.00s)
+          service_extra_test.go:395: Fetch calls = [], want [GO-2026-0001] (one fetch, the newest time is after the stored one)
+  FAIL
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/vuln	0.241s
+  FAIL
+  ```
+  I restored the mutation by hand. `git diff --stat` then showed only internal/vuln/service_extra_test.go changed, so service.go matches 4415649.
+- `go test -race -count=3 -run 'FetchSetKeepsNewest|Hostile' ./internal/vuln/ ./internal/notify/discord/ ./internal/notify/slack/` -> exit 0
+  ```
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.169s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	1.324s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	1.274s
+  ```
+- `make check` -> exit 0 (last lines)
+  ```
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	1.138s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	1.125s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.238s
+  (every other package ok, cached)
+  ==> arch-lint
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+  ```
+- `git status --porcelain` -> only the three test files above (plus this report)
+
+Decisions:
+- Finding 1: I did not use day(8) as the case 2 delta time, as suggested. The fake ModifiedSince, like OSV's modified_id.csv, returns only lines after the delta cursor, and after the first run the cursor is at(0), already later than day(9). A day(8) delta line was never returned, so the "last wins" mutation still passed; I checked this with the mutation before the change. Instead, the test now sets advLib's stored time to at(10) before the first run, after the cursor, and asserts that precondition (stored at(10), cursor at(0)). Case 1 is query at(10) (equal to stored) and delta at(48). Case 2 is query at(48) and delta at(5) (after the cursor, before the stored time). Only keeping the newer of the two refs causes the fetch. Both mutations fail, as shown above.
+- Finding 2: I renamed the Discord test to TestDiscordSend_HostileTextCannotPingOrMaskLinks, with a doc comment saying bare URLs and channel references are out of scope per the lead's ruling. I gave the Slack test, which had the same old name and falls under the same ruling, the matching name TestSlackSend_HostileTextCannotPingOrMaskLinks and a matching comment.
+- Case counts unchanged: TestRun_FetchSetKeepsNewestModified 2, Discord hostile 12 (+26 cut sweep), Slack hostile 12.
+
+Outside scope: none
+Concerns: none. The lead ruled on the AMBIGUOUS item: reading 1 holds.
+Question or blocker: none

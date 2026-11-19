@@ -150,6 +150,8 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last four hold only `New` and `Check` (the doctor probe). The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
+
 ## What each job does
 
 Each row is one job: the service that implements it, the pure decisions it makes, what it calls out through, and the tables it writes. Tables are described in [database.md](database.md) and the store interfaces in [data-access.md](data-access.md).
@@ -182,6 +184,9 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | `GET /eval` | eval report (read) |
 | `GET /settings`, `POST /settings` | `settings.Service` (LLM key, write-only; scheduled with the LLM milestone, M4) |
 | `GET /health` | last runs, JSON |
+| `GET /static/style.css` | the embedded stylesheet |
+
+After M0 the server answers `GET /`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first, through `internal/query`. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set.
 
 The settings page never shows the stored key. It shows the last four characters only.
 
@@ -189,24 +194,28 @@ The settings page never shows the stored key. It shows the last four characters 
 
 | CLI | Handled by |
 |---|---|
-| `upw serve` | starts Scheduler and web.Server |
-| `upw run <job>`, `run all --once` | `pipeline.Runner` |
+| `upw serve` | starts Scheduler and web.Server; stops on SIGINT or SIGTERM, web server first, then the scheduler, then the store |
+| `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all` |
 | `upw timeline`, `findings` | `internal/query` |
 | `upw llm estimate\|rejudge` | `triage.Service` |
 | `upw eval run\|report\|import` | `eval.Service` (`import` imports labels) |
 | `upw export verdicts\|labels\|state` | store export; one kind per invocation, written to stdout. `upw eval export` is an alias of `upw export labels` |
-| `upw doctor` | each outbound adapter's `Check` (the `Checker` interface in [interfaces.md](interfaces.md)) |
+| `upw doctor` | each outbound adapter's `Check` (the `Checker` interface in [interfaces.md](interfaces.md)); prints one line per check, does not open the database and exits 1 if any check fails. The probes are listed in [external-sources.md](external-sources.md) |
+
+Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M0 no job is registered with the Runner, so `run all -once` has nothing to run and a schedule's chain is empty until the milestone that adds its jobs. The commands `timeline`, `findings`, `llm`, `eval` and `export` are planned for later milestones.
 
 ### Schedules
 
-| Schedule | Jobs run in order |
-|---|---|
-| every 6 h | ingest, timeline, usage, upstream |
-| every 6 h, +5 min | vulns |
-| hourly | issues, prefilter |
-| hourly, +5 min | triage |
-| 08:00 daily | digest |
-| 03:30 daily | backup |
+| Schedule | Config key and default | Jobs run in order |
+|---|---|---|
+| every 6 h | `ingest`: `5 */6 * * *` | ingest, timeline, usage, upstream |
+| every 6 h, +5 min | `vulns`: `10 */6 * * *` | vulns |
+| hourly | `issues`: `15 * * * *` | issues, prefilter |
+| hourly, +5 min | `llm`: `20 * * * *` | triage |
+| 08:00 daily | `digest`: `0 8 * * *` | digest |
+| 03:30 daily | `backup`: `30 3 * * *` | backup |
+
+Each schedule is a five-field cron expression (minute, hour, day of month, month, day of week) evaluated in the process's local time zone, so the compose file sets `TZ`. Seconds fields, descriptors such as `@daily` and a `TZ=` or `CRON_TZ=` prefix are rejected. Defaults are set in `internal/config` and shown in `deploy/upw.example.yaml`. A schedule runs its jobs one after another through the Runner; one job's failure is logged and the next job still runs. A tick is skipped, with a warning, while the previous run of the same schedule is still going. `notify.heartbeat` (default `0 8 * * 1`, weekly) is a config key for the "all quiet" message; the scheduler does not run it yet.
 
 ## Two requests, followed end to end
 
@@ -282,4 +291,4 @@ sequenceDiagram
   R->>S: RunStore.Finish
 ```
 
-A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly.
+A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly. A job that panics is recorded the same way, with an error starting `panic: `. There is one job_failure finding per job, with fingerprint `job_failure|<job>`; a repeat failure refreshes it, and the next successful run of that job resolves it.

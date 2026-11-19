@@ -15,7 +15,9 @@ The lead session orchestrates. It plans, writes the interface files and work ord
 - Opus builds design-heavy packages: timeline, vuln matching, prefilter, triage, store.
 - Sonnet does fully specified work (adapters, notifiers, CLI wiring, templates), writes tests, reviews diffs, runs the security review, and keeps the docs current.
 
-Reviewers and checkers use Sonnet rather than Opus. A reviewer reads a diff against a written brief, which is cheaper work than design.
+Since the build start (see [decisions.md](decisions.md)), all code and tests are written by Opus agents: `go-builder`, `go-mech` and `test-writer` are each dispatched with `model: "opus"`, which overrides the default in their definitions. Sonnet remains for docs upkeep and the milestone security review.
+
+Reviewers and checkers use a lower tier than the builders. A reviewer reads a diff against a written brief, which is cheaper work than design.
 
 ## Agents
 
@@ -29,6 +31,8 @@ Agent definitions are in `.claude/agents/`.
 | `reviewer` | Sonnet | Reads a diff against its work order and reports only what affects correctness | Write anything (read-only) |
 | `security-reviewer` | Sonnet | Runs the `security-check` skill at the end of each milestone | Write anything (read-only) |
 | `docs-keeper` | Sonnet | Updates `docs/` to match the code, using the `docs-sync` skill | Edit anything outside `docs/` |
+
+The Model column is the default in each agent's definition. The lead passes the model explicitly at dispatch, and the three builders run on Opus (see Model routing).
 
 Interface files are written first and owned by the lead session. Builders work in parallel only on packages that share no files.
 
@@ -54,7 +58,14 @@ Skills are in `.claude/skills/<name>/SKILL.md`. Each tells an agent how to do a 
 
 ## make check
 
-One command, `make check`, runs gofmt, `go vet`, build, `go test -race`, and the layering lint. It is the same command for agents, for the lead session and for CI. A task is not done until it passes.
+One command, `make check`, runs six steps in order: gofmt, `go vet`, build, `go test -race`, the layering lint and the standard-library import check. It is the same command for agents, for the lead session and for CI. A task is not done until it passes.
+
+- The layering lint is `go-arch-lint`, run with `go run <module>@<version>` (v1.19.2) so it never enters `go.mod`; its rules are in `.go-arch-lint.yml`. Its deep scan is off (`deepScan: false`), because the scan treats `cmd/upw` passing `*store.DB` into a constructor that takes a consumer-declared interface as the store depending on that consumer, which is how the services are wired. The import rules are still checked in full.
+- The import check is `scripts/check-imports.sh`. It uses `go list` to fail when `database/sql` is imported outside `internal/store`, or `os/exec` outside `internal/gitsrc` and `internal/testutil`. It looks at non-test imports only.
+
+## CI and the image
+
+`.github/workflows/ci.yml` runs on pushes to `main`, on `v*` tags and on pull requests. The `check` job runs `make check` with the Go version from `go.mod`. The `image` job builds `deploy/Dockerfile` for `linux/amd64` after `check` passes and, only on a `v*` tag, pushes it to the GitHub container registry as the tag and `latest`. The image is Alpine with `git`, `ca-certificates` and `tzdata`, runs as a non-root user, and starts `upw serve -config /etc/upstreamwatch/upw.yaml`. `deploy/compose.yml` publishes port 8080 on the host's loopback only. See the `upw-deploy` skill for deployment.
 
 ## Git policy
 
@@ -63,9 +74,10 @@ The project has two parties: the owner and the lead session. The lead session co
 ## Review weight
 
 - Every task: `make check`.
+- Every work order's diff is inspected by GPT-6 Astra (Codex CLI, read-only, through the claudex-loop runner's `inspect` mode) before commit. Astra never edits; findings go back to the building agent. This holds while Codex weekly usage is below 80%; at or above 80% the Sonnet `reviewer` agent takes over, as described in the `review-gate` skill.
 - Design-heavy tasks: also a fresh `reviewer` agent that reads the diff against the work order.
 - Once per milestone: a security review by `security-reviewer`.
 
 ## Dependencies
 
-The libraries named in the plan are approved. The CLI uses the standard library `flag`, with no Cobra or Viper. Anything else needs the owner's yes. Tests use no frameworks such as testify; fakes are written by hand. See [external-sources.md](external-sources.md) for the library list.
+The libraries named in the plan are approved, and so is `go.yaml.in/yaml/v3` (pinned at v3.0.6) for the config loader. The CLI uses the standard library `flag`, with no Cobra or Viper. Anything else needs the owner's yes. Tests use no frameworks such as testify; fakes are written by hand. See [external-sources.md](external-sources.md) for the library list.

@@ -25,6 +25,14 @@ These replace the review-weight and model-routing lines above where they differ.
 - YAML library: `go.yaml.in/yaml/v3` is approved (pinned at v3.0.6).
 - The owner creates the public GitHub repository. Until it exists the lead commits locally only.
 
+## Lead decisions during M0
+
+Rulings the lead session made while building M0, in the work orders under `.claude/plans/m0/`.
+
+- The whole documented schema is created in one migration, `0001_initial_schema.sql`, not table by table as each milestone needs it. With foreign keys on, SQLite rejects a write to a table whose `REFERENCES` names a table that does not exist yet, and constraints cannot be added later under the additive-only rule. Foreign keys to `dep_versions` have explicit delete rules because a reindex deletes and rebuilds a repo's `dep_versions`: `advisory_matches.dep_version_id` and `issue_candidates.dep_version_id` are `ON DELETE CASCADE`, and `findings.dep_version_id` is `ON DELETE SET NULL`, so a finding keeps its row. Every other foreign key is `NO ACTION`.
+- One `job_failure` finding per job. Its fingerprint is `job_failure|<job>` (the plan's `kind|repo|package|advisory_or_issue` form has no repo, package or advisory to fill for a failed job). A failed run raises or refreshes the finding; the next successful run of the same job resolves it.
+- `httpx`, the shared HTTP client, was built in M0 and not in M2 as the plan's milestones place it. It brings `model.HTTPValidator` and the `httpx.CacheStore` interface, implemented by `store.DB` over the `http_cache` table. Its address policy follows the rulings in the httpx work order: see [external-sources.md](external-sources.md).
+
 ## The eight accepted changes
 
 | Change | Why |

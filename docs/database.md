@@ -2,7 +2,9 @@
 
 This document shows the SQLite schema: three entity-relationship diagrams, every table with its columns, and which tables can be rebuilt from outside sources. The schema comes from section 4 of [the plan](../mvp-plan/PLAN.md) plus four accepted additions: `llm_verdicts.request_payload`, `llm_verdicts.evidence_verified`, the `digests` table (with its `error` column) and the `settings` table. Which interface reads and writes each table is in [data-access.md](data-access.md).
 
-Conventions: names are snake_case, primary keys are integers unless noted, and timestamp columns end in `_ts` and hold ISO-8601 UTC text. Every table has `created_ts` and `updated_ts`, set by the store; they are left out of the listings below. The ER diagrams show only keys and the columns that carry meaning.
+The whole schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md).
+
+Conventions: names are snake_case, primary keys are integers unless noted, and timestamp columns end in `_ts` and hold ISO-8601 UTC text (RFC 3339, second precision, `Z` suffix). Every table has `created_ts` and `updated_ts`, set by the store, except `kv`, `http_cache` and `settings`, which have only `updated_ts`, and `schema_migrations`, which has neither. The two timestamps are left out of the listings below. The ER diagrams show only keys and the columns that carry meaning.
 
 ## Entity-relationship diagrams
 
@@ -548,12 +550,12 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | advisory_id | one of advisory_id and issue_id is set |
 | issue_id | |
 | verdict_id | |
-| fingerprint | unique; kind, repo, package, and the advisory or issue |
+| fingerprint | unique; kind, repo, package, and the advisory or issue (`kind\|repo\|package\|advisory_or_issue` in the plan). A `job_failure` finding has none of those, so its fingerprint is `job_failure\|<job>`: one finding per job |
 | score | |
 | rank_reason | |
 | first_seen_ts | |
 | last_changed_ts | |
-| resolved_ts | set when the pin leaves the affected range or the issue closes as not a bug |
+| resolved_ts | set when the pin leaves the affected range or the issue closes as not a bug; for a `job_failure` finding, when the next run of the job succeeds |
 | reported_in_digest_ts | |
 
 **finding_state**
@@ -601,16 +603,23 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 | Column | Notes |
 |---|---|
 | key | text primary key; for example `llm_api_key` |
-| value | encrypted |
+| value | BLOB, not null; encrypted |
 
 ### Ops
 
 | Table | Columns |
 |---|---|
 | runs | id, job, started_ts, finished_ts, status, stats (JSON), error |
-| http_cache | url (primary key), etag, last_modified, fetched_ts, status |
+| http_cache | url (primary key), etag, last_modified, fetched_ts, status; the validators of conditional requests, one row per exact URL |
 | kv | key (primary key), value; cursors for KEV, EPSS and the OSV `modified_id` files |
-| schema_migrations | tracks applied migrations; owned by `store.DB` |
+| schema_migrations | version (primary key), name, checksum, applied_ts; tracks applied migrations; owned by `store.DB` |
+
+### Constraints the migration adds
+
+- `runs.status` is one of `running`, `succeeded`, `failed`. `findings.kind` is one of `advisory`, `issue`, `job_failure`. `finding_state.state` is one of `open`, `acked`, `snoozed`, `dismissed`. All three are `CHECK` constraints.
+- `runs.stats` is always a JSON object (`{}` when empty) and `runs.error` is the empty string when there is no failure; both are `NOT NULL`. `findings.score`, `rank_reason`, `first_seen_ts` and `last_changed_ts` are `NOT NULL`.
+- A new `finding_state` row leaves `changed_ts` and `changed_by` NULL.
+- Foreign keys are on. Deleting a `dep_versions` row, which a reindex does, deletes its `advisory_matches` and `issue_candidates` rows (`ON DELETE CASCADE`) and sets `findings.dep_version_id` to NULL (`ON DELETE SET NULL`). Every other foreign key is `NO ACTION`, so a parent row cannot be deleted while children point at it, and a finding of kind `advisory` or `issue` cannot be written until the rows it names exist.
 
 ## Reconstructible or not
 

@@ -314,6 +314,12 @@ var baseConfig = []string{
 	"core.hooksPath=" + os.DevNull,
 	"http.lowSpeedLimit=1000",
 	"http.lowSpeedTime=60",
+	// No automatic gc or maintenance: git can start it detached after a
+	// fetch, in a new session that escapes the process-group kill, and it
+	// would then write into a clone that is being pruned or removed.
+	"gc.auto=0",
+	"gc.autoDetach=false",
+	"maintenance.auto=false",
 }
 
 // environ is the whole environment git runs with, before any credential

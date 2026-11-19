@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -535,6 +536,39 @@ func TestRun_RecordErrorsOnRetryAndHeartbeat(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The record timeout counts from when each send returns, so a send slower
+// than the timeout still leaves its row, and so does every send after it.
+func TestRun_SlowSendStillRecorded(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		st := &fakeStore{findings: []model.Finding{jobFinding(1, 50, now0)}}
+		slow := &slowNotifier{delay: 100 * time.Millisecond, err: errors.New("smtp: i/o timeout")}
+		fast := &fakeNotifier{}
+		s := newTestService(st, []Channel{{Name: "email", Notifier: slow}, {Name: "webhook", Notifier: fast}}, Options{})
+		s.recordTimeout = 50 * time.Millisecond
+
+		_, err := s.Run(t.Context(), model.Scope{})
+		if err == nil || !strings.Contains(err.Error(), "email: smtp: i/o timeout") {
+			t.Errorf("Run() error = %v, want one naming the email send", err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Run() error = %v, a record ran out of time", err)
+		}
+		if len(st.digests) != 2 {
+			t.Fatalf("digests rows = %+v, want 2", st.digests)
+		}
+		if got := st.digests[0]; got.Channel != "email" || got.Status != model.DigestFailed {
+			t.Errorf("row 1 = %s %s, want email failed", got.Channel, got.Status)
+		}
+		if got := st.digests[1]; got.Channel != "webhook" || got.Status != model.DigestSent {
+			t.Errorf("row 2 = %s %s, want webhook sent", got.Channel, got.Status)
+		}
+		if len(fast.sent) != 1 {
+			t.Errorf("webhook got %d digests, want 1", len(fast.sent))
+		}
+	})
 }
 
 func TestRun_ChannelsInOrder(t *testing.T) {

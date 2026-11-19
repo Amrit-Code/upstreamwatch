@@ -85,3 +85,62 @@ Outside scope:
 - docs/data-access.md line 58 says the digest job uses the `FindingStore` group. internal/report/interfaces.go names its interface `Store`. This is a naming difference only; docs-sync can align it.
 - Doc rows now out of date, for docs-sync: in docs/architecture.md the job table row for `digest` says "ranking; what changed since last digest". Ranking is model.RankAdvisory; the job decides what changed, the heartbeat and resends. The row also does not list the tables the job reads (runs, through LatestRuns).
 - internal/model/digest.go's DigestItem.Headline example and the sample in internal/model/digest_text_test.go use "vulns failed" for a job failure. The work order says "job <name> failed", and that is what is rendered. The model sample is only test data, but it no longer matches what the job produces.
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-10-report-digest-job.md (review finding, major: in sendAll one 10 s record context was created before the send loop, so slow sends could use up the time and leave SaveDigest failing with context deadline exceeded)
+Files changed:
+- internal/report/service.go (modified): the record timeout is now an unexported field, `Service.recordTimeout`, which NewService sets to `defaultRecordTimeout` (10 s). A new helper, `recordContext(ctx)`, returns `context.WithTimeout(context.WithoutCancel(ctx), s.recordTimeout)`. sendAll now calls `recordSend(ctx, rec)` after each Send returns, and recordSend makes a new record context for that one SaveDigest. recordRetry uses the same helper; it already built its context after the send.
+- internal/report/fakes_test.go (modified): fakeStore.SaveDigest and MarkDigestRetried return ctx.Err() once ctx is done, as the real store's write queue does. Added slowNotifier, which sleeps for its delay and then returns its error.
+- internal/report/service_test.go (modified): added TestRun_SlowSendStillRecorded. It runs inside synctest.Test with recordTimeout set to 50 ms. Channel "email" sleeps 100 ms and then fails, and channel "webhook" succeeds. The test asserts that the email failed row and the webhook sent row are both saved, that the error names the email send, and that it does not wrap context.DeadlineExceeded.
+Commands run:
+- Confirmed the new test catches the bug: I temporarily restored the shared record context in sendAll and ran `go test -race -count=1 -run TestRun_SlowSendStillRecorded ./internal/report/` -> exit 1
+  --- FAIL: TestRun_SlowSendStillRecorded (0.00s)
+      service_test.go:557: Run() error = digest send failed: email: smtp: i/o timeout
+          record digest for channel email: context deadline exceeded
+          record digest for channel webhook: context deadline exceeded, a record ran out of time
+      service_test.go:560: digests rows = [], want 2
+  FAIL
+  FAIL	github.com/Amrit-Code/upstreamwatch/internal/report	0.280s
+  FAIL
+  Then I put the fix back.
+- `make check` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/gitsrc	7.101s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/httpx	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/ingest	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/issues/github	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/model	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/ops	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/pipeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/query	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/report	1.241s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/sched	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/store	(cached)
+  ?   	github.com/Amrit-Code/upstreamwatch/internal/testutil/gitrepo	[no test files]
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/timeline	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=3 ./internal/report/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/report	1.444s
+- `git status --porcelain` -> exit 0
+   M internal/report/fakes_test.go
+   M internal/report/service.go
+   M internal/report/service_test.go
+Decisions: Each record still gets 10 s, counted from when its own send returns; that is the value from round 0. In recordRetry, SaveDigest and MarkDigestRetried share one record context, since nothing slow runs between them. The two minor findings (an undecodable payload, and a resend suppressing a heartbeat) are left as built, as the coordinator instructed.
+Outside scope: none new.

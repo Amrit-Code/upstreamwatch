@@ -74,7 +74,12 @@ func (s *fakeStore) LatestRuns(context.Context) ([]model.Run, error) {
 	return slices.Clone(s.runs), nil
 }
 
-func (s *fakeStore) SaveDigest(_ context.Context, rec model.DigestRecord) (model.DigestRecord, error) {
+// SaveDigest fails with ctx's error once ctx is done, as the real store's
+// write queue does.
+func (s *fakeStore) SaveDigest(ctx context.Context, rec model.DigestRecord) (model.DigestRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return model.DigestRecord{}, err
+	}
 	if s.saveErr != nil {
 		return model.DigestRecord{}, s.saveErr
 	}
@@ -97,7 +102,11 @@ func (s *fakeStore) FailedDigests(context.Context) ([]model.DigestRecord, error)
 	return out, nil
 }
 
-func (s *fakeStore) MarkDigestRetried(_ context.Context, id int64) error {
+// MarkDigestRetried fails with ctx's error once ctx is done.
+func (s *fakeStore) MarkDigestRetried(ctx context.Context, id int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.retriedErr != nil {
 		return s.retriedErr
 	}
@@ -143,4 +152,16 @@ func (n *fakeNotifier) Send(_ context.Context, d model.Digest) error {
 	}
 	n.sent = append(n.sent, d)
 	return nil
+}
+
+// slowNotifier takes delay, on the clock of the synctest bubble it runs in,
+// and then fails with err.
+type slowNotifier struct {
+	delay time.Duration
+	err   error
+}
+
+func (n *slowNotifier) Send(context.Context, model.Digest) error {
+	time.Sleep(n.delay)
+	return n.err
 }

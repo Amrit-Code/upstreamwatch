@@ -20,9 +20,9 @@ const jobName = "digest"
 // positive.
 const defaultMaxItems = 25
 
-// recordTimeout bounds the SaveDigest and MarkDigestRetried calls that record
-// a send, which run on a context detached from the run's cancellation.
-const recordTimeout = 10 * time.Second
+// defaultRecordTimeout bounds the store calls that record one send, which run
+// on a context detached from the run's cancellation.
+const defaultRecordTimeout = 10 * time.Second
 
 // statKeys are the counters every run reports, present even when zero.
 var statKeys = []string{
@@ -54,6 +54,10 @@ type Service struct {
 	channels []Channel
 	opts     Options
 	logger   *slog.Logger
+	// recordTimeout bounds the store calls that record one send, counted
+	// from when that send returned. NewService sets it to
+	// defaultRecordTimeout; tests in this package shorten it.
+	recordTimeout time.Duration
 }
 
 // NewService returns a digest Service sending through channels, in order. A
@@ -66,7 +70,15 @@ func NewService(store Store, channels []Channel, opts Options, logger *slog.Logg
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Service{store: store, channels: channels, opts: opts, logger: logger}
+	return &Service{store: store, channels: channels, opts: opts, logger: logger, recordTimeout: defaultRecordTimeout}
+}
+
+// recordContext returns the context for recording one send: detached from
+// ctx's cancellation, so a send cut short by shutdown still leaves its row,
+// and bounded by recordTimeout from now. Call it after the send returns, so
+// the time a send took does not count against the record.
+func (s *Service) recordContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), s.recordTimeout)
 }
 
 // Name returns "digest".
@@ -208,7 +220,7 @@ func (s *Service) retryFailed(ctx context.Context, now time.Time, stats model.St
 // context that outlives the run's cancellation so a delivered resend is not
 // sent again.
 func (s *Service) recordRetry(ctx context.Context, row model.DigestRecord, now time.Time) error {
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+	rctx, cancel := s.recordContext(ctx)
 	defer cancel()
 	if _, err := s.store.SaveDigest(rctx, model.DigestRecord{
 		Channel: row.Channel,
@@ -345,12 +357,6 @@ func (s *Service) sendAll(ctx context.Context, d model.Digest, now time.Time, st
 	if err != nil {
 		return nil, fmt.Errorf("encode digest: %w", err)
 	}
-	// Recording runs on a context that outlives the run's cancellation, so a
-	// send cut short by shutdown still leaves a failed row to retry; the
-	// findings are already marked reported.
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
-	defer cancel()
-
 	var failures []string
 	var errs []error
 	for _, ch := range s.channels {
@@ -365,9 +371,19 @@ func (s *Service) sendAll(ctx context.Context, d model.Digest, now time.Time, st
 		} else {
 			stats["sent"]++
 		}
-		if _, err := s.store.SaveDigest(rctx, rec); err != nil {
+		// The findings are already marked reported, so every send, failed
+		// ones above all, must leave its row; a failed row is resent next run.
+		if err := s.recordSend(ctx, rec); err != nil {
 			errs = append(errs, fmt.Errorf("record digest for channel %s: %w", ch.Name, err))
 		}
 	}
 	return failures, errors.Join(errs...)
+}
+
+// recordSend saves rec on its own record context.
+func (s *Service) recordSend(ctx context.Context, rec model.DigestRecord) error {
+	rctx, cancel := s.recordContext(ctx)
+	defer cancel()
+	_, err := s.store.SaveDigest(rctx, rec)
+	return err
 }

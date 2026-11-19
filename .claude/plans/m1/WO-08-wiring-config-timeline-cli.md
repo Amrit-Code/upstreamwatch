@@ -14,9 +14,10 @@ Ticket: UPW-35 (and the wiring parts of UPW-29 and UPW-34)
 
 - `internal/config/` (all files)
 - `internal/query/service.go`, `internal/query/timeline.go` (new), `internal/query/*_test.go`
-- `cmd/upw/` (all files except `doctor.go`, which needs no change)
+- `cmd/upw/` (all files except `doctor.go`, which needs no change, and `parity_e2e_test.go` and `testdata/parity/`, which WO-10 creates in parallel)
 - `deploy/upw.example.yaml`, `upw.dev.yaml`
-- `Makefile` only if you add a target; none is required
+
+Not owned: `Makefile` and `.github/workflows/ci.yml` (WO-10).
 
 Lead-owned, read-only for you: `internal/query/interfaces.go`, `internal/model/`, the interfaces of `internal/ingest` and `internal/timeline`, every other package.
 

@@ -2,7 +2,7 @@
 
 Milestone: M1
 Agent: go-mech   Model: opus
-Depends on: WO-01 to WO-07 (merged); can run beside WO-08
+Depends on: WO-01 to WO-07 (merged); runs beside WO-08, which owns every other file in `cmd/upw/`
 Report file: `.claude/plans/m1/WO-10-gitpkgs-parity.report.md`
 Ticket: UPW-38
 

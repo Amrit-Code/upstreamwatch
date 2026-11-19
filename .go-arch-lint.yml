@@ -97,6 +97,8 @@ deps:
     mayDependOn: [ findings, settings, eval, query ]
   prefilter:
     canUse: [ vers ]
+  vuln:
+    canUse: [ vers ]
   triage:
     mayDependOn: [ llm ]
   gitsrc:           { mayDependOn: [ httpx ] }

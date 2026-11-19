@@ -62,6 +62,21 @@ Rulings the lead session made while planning M1, in the work orders under `.clau
 - `internal/gitsrc` uses `httpx.BlockedAddr` for the private-address check, so git remotes and HTTP adapters refuse the same ranges. `internal/extract` may use the YAML library, for compose files.
 - `targets[].allow_private_hosts: true` exempts one target's host from the private-address check; the URL must still be https.
 
+## Lead decisions for M2
+
+Rulings the lead session made while planning M2, in the work orders under `.claude/plans/m2/`.
+
+- Range evaluation, the fixed version, confidence and the exposure window are unexported functions in `internal/vuln` (the job table in [architecture.md](architecture.md) places these decisions there), not methods on `model.Advisory` as the domain-model diagram suggests. `internal/vuln` may import `git-pkgs/vers`.
+- The OSV adapter maps between upstreamwatch's package URLs and OSV's ecosystems and names in both directions. `pkg:golang/toolchain` is OSV's Go `stdlib` (and `toolchain`); a two-component toolchain version (`1.26`, from a `go` directive or a floating `golang:1.26-alpine` tag) is evaluated as `1.26.0` with confidence at most medium. `model.OSVEcosystem` is the one table of package URL types that OSV covers.
+- The pairs already sent to the OSV querybatch endpoint are kept in a new table, `osv_queries` (migration `0004_vulns.sql`), keyed by package URL and version so they survive a timeline rebuild. Later runs query only new pairs; changes to advisories for pairs already queried arrive through each ecosystem's `modified_id.csv`, whose cursor is kept in `kv`. On the first run the cursor is set to the newest line without fetching, because the querybatch covers everything that exists.
+- Intervals with no resolved version (an unpinned requirement) are neither queried nor matched in M2. Matching a bare requirement against advisory ranges would flag almost every advisory for the package.
+- An `affected` entry whose only ranges are `GIT` matches only through its explicit `versions` list, with confidence low.
+- One advisory finding per (repo, package, advisory), whatever the number of intervals that matched; its fingerprint is `advisory|<repo slug>|<package URL>|<advisory id>` and it links to the most relevant interval (an open one if any). Findings for historical-only exposure are open findings with a lower score. Auto-resolve stays in M5.
+- Severity comes from the record's `database_specific.severity` when present, otherwise from a CVSS v3 vector's base score, computed by the adapter; CVSS v4-only records are `unknown`.
+- `UpsertFinding` moves `last_changed_ts` only when the score or rank reason changes or a resolved finding comes back, so a job that refreshes findings every run does not make them all "changed" in the next digest. The EPSS part of the score is rounded to a whole number for the same reason.
+- The digest reports open findings (effective state, so an expired snooze counts) never reported (`reported_in_digest_ts` empty) as NEW and those changed since they were reported as CHANGED; acked, snoozed and dismissed findings are left out. After building the digest the job marks its findings reported, sends it to every enabled channel, and records one `digests` row per channel. A failed channel's row keeps the payload and is resent on the next run; a failed send also fails the job, so it shows as a `job_failure` finding. Each section lists at most 25 items, then "and N more".
+- The weekly heartbeat is decided inside the digest job: when there is nothing to report and the most recent `notify.heartbeat` fire time is after the last sent digest, the job sends the "all quiet" message. `cmd/upw` gives the job the fire-time function built from the cron expression.
+
 ## The eight accepted changes
 
 | Change | Why |

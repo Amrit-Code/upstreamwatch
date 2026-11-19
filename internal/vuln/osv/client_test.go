@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
+	"github.com/Amrit-Code/upstreamwatch/internal/vuln"
 	"github.com/Amrit-Code/upstreamwatch/internal/vuln/osv"
 )
 
@@ -18,14 +19,22 @@ type checker interface {
 	Check(ctx context.Context) error
 }
 
-var _ checker = (*osv.Client)(nil)
+var (
+	_ checker             = (*osv.Client)(nil)
+	_ vuln.AdvisorySource = (*osv.Client)(nil)
+)
 
 // newClient returns an osv.Client whose httpx client reaches loopback test
 // servers and retries quickly.
 func newClient(baseURL string) *osv.Client {
+	return newClientOpts(osv.Options{BaseURL: baseURL})
+}
+
+// newClientOpts is newClient with every option given.
+func newClientOpts(opts osv.Options) *osv.Client {
 	logger := slog.New(slog.DiscardHandler)
 	hc := httpx.New(nil, httpx.Options{AllowPrivateHosts: []string{"127.0.0.1"}, MaxWait: time.Millisecond}, logger)
-	return osv.New(hc, osv.Options{BaseURL: baseURL}, logger)
+	return osv.New(hc, opts, logger)
 }
 
 func TestClient_Check_OK(t *testing.T) {

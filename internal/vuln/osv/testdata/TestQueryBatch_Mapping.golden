@@ -1,0 +1,32 @@
+{
+  "queries": [
+    {
+      "package": {
+        "name": "stdlib",
+        "ecosystem": "Go"
+      },
+      "version": "1.26.0"
+    },
+    {
+      "package": {
+        "name": "github.com/gin-gonic/gin",
+        "ecosystem": "Go"
+      },
+      "version": "1.9.1"
+    },
+    {
+      "package": {
+        "name": "pyyaml",
+        "ecosystem": "PyPI"
+      },
+      "version": "6.0.1"
+    },
+    {
+      "package": {
+        "name": "actions/checkout",
+        "ecosystem": "GitHub Actions"
+      },
+      "version": "v4.1.1"
+    }
+  ]
+}

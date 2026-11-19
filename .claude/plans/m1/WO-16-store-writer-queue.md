@@ -29,14 +29,14 @@ Read-only: migrations, every other store file, every other package.
 
 - `TestDB_ConcurrentWriters` unchanged and passing with `-race -count=20`.
 - `TestDB_InTx_ContextCancelledWhileQueued`: hold the queue in one `InTx` (blocked on a channel), start a second `InTx` with a context that is cancelled → it returns an error wrapping `context.Canceled` without running its function; releasing the first lets it commit.
-- `TestDB_InTx_NestedJoins` still passes (nested calls must not deadlock on the queue).
+- `TestInTx_Nested` (existing, in db_test.go) still passes (nested calls must not deadlock on the queue).
 
 ## Acceptance
 
 | Command | Expected |
 |---|---|
 | `make check` | exit 0 |
-| `go test -race -count=20 -run 'TestDB_ConcurrentWriters\|TestDB_InTx' ./internal/store/` | `ok` |
+| `go test -race -count=20 -run 'TestDB_ConcurrentWriters\|TestDB_InTx\|TestInTx' ./internal/store/` | `ok` |
 | `git status --porcelain` | only owned files and the report file |
 
 ## Skills and docs

@@ -58,6 +58,11 @@ func (c Config) validate() []error {
 		if !slices.Contains([]TargetAuth{"targets", "upstream", "none"}, t.Auth) {
 			add("%s.auth: %q is not one of targets, upstream, none", path, t.Auth)
 		}
+		for j, p := range t.ExcludePaths {
+			if err := checkExcludePath(p); err != nil {
+				add("%s.exclude_paths[%d]: %v", path, j, err)
+			}
+		}
 	}
 
 	for _, s := range []struct{ key, expr string }{
@@ -173,6 +178,21 @@ func checkTargetURL(path, raw string) []error {
 		errs = append(errs, fmt.Errorf("%s: must not contain user info; credentials come from auth", path))
 	}
 	return errs
+}
+
+// checkExcludePath applies the rules for one targets[].exclude_paths entry:
+// a non-empty relative slash-separated path with no leading slash and no ".."
+// segment.
+func checkExcludePath(p string) error {
+	switch {
+	case p == "":
+		return errors.New("must not be empty")
+	case strings.HasPrefix(p, "/"):
+		return fmt.Errorf("%q must be relative to the repository root, without a leading /", p)
+	case slices.Contains(strings.Split(p, "/"), ".."):
+		return fmt.Errorf("%q must not contain a .. segment", p)
+	}
+	return nil
 }
 
 // isCronShape reports whether s has the shape of a five-field cron

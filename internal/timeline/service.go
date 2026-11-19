@@ -19,7 +19,7 @@ const blobChunkSize = 500
 // statKeys are the counters every run reports, present even when zero.
 var statKeys = []string{
 	"targets", "skipped", "failed", "resets", "commits_walked", "files_read",
-	"events_written", "intervals", "parse_errors", "files_skipped",
+	"events_written", "intervals", "parse_errors", "files_skipped", "files_excluded",
 }
 
 // TargetSettings are the timeline settings of one configured target.
@@ -30,6 +30,9 @@ type TargetSettings struct {
 	// Ecosystems, when not empty, keeps only dependencies whose
 	// Package.Ecosystem is listed.
 	Ecosystems []string
+	// ExcludePaths are directory prefixes (relative to the repository root,
+	// slash-separated) whose manifests are not indexed for this target.
+	ExcludePaths []string
 }
 
 // Options configures a Service.
@@ -183,6 +186,9 @@ func (s *Service) indexTarget(ctx context.Context, t TargetSettings) (model.Stat
 		return st, fmt.Errorf("list manifest commits: %w", err)
 	}
 	st["commits_walked"] = int64(len(commits))
+	// Excluded paths leave the commits before any blob is read, so they cost
+	// no read and produce no events or manifest rows.
+	commits, st["files_excluded"] = dropExcluded(commits, t.ExcludePaths)
 
 	var refs []model.BlobRef
 	for _, c := range commits {

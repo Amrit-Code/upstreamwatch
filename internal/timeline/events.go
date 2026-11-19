@@ -83,8 +83,8 @@ func diffCommit(c model.Commit, st repoState, changes []manifestChange) []model.
 // diffManifest compares one manifest's previous state with its dependencies
 // at commit c, which must have distinct package URLs. It returns the events,
 // ordered by package URL, and the manifest's next state. A dependency whose
-// direct flag or scope alone differs produces no event and keeps its previous
-// state.
+// version, requirement or direct flag differs produces a changed event; one
+// whose scope alone differs produces no event and keeps its previous state.
 func diffManifest(c model.Commit, path string, prev manifestState, deps []model.Dependency) ([]model.DepEvent, manifestState) {
 	next := make(manifestState, len(deps))
 	var events []model.DepEvent
@@ -94,7 +94,7 @@ func diffManifest(c model.Commit, path string, prev manifestState, deps []model.
 		case !ok:
 			events = append(events, newEvent(c, path, d, model.ChangeAdded, ""))
 			next[d.Package.PURL] = d
-		case old.Version != d.Version || old.Requirement != d.Requirement:
+		case old.Version != d.Version || old.Requirement != d.Requirement || old.Direct != d.Direct:
 			events = append(events, newEvent(c, path, d, model.ChangeChanged, old.Version))
 			next[d.Package.PURL] = d
 		default:

@@ -40,6 +40,9 @@ type Target struct {
 	Ecosystems        []string
 	Unity             bool
 	AllowPrivateHosts bool // exempts this target's host from the private-address check
+	// ExcludePaths are directory prefixes, relative to the repository root
+	// and slash-separated, whose manifests the timeline does not index.
+	ExcludePaths []string // targets[].exclude_paths
 }
 
 // TargetAuth names the token used to fetch a target: "targets", "upstream"

@@ -19,13 +19,13 @@ All calls go out from the binary. Nothing calls in. Failures never fail silently
 | GitHub REST | Issues and comments of public upstream repos | `/repos/{o}/{r}/issues` and `/issues/comments` with ETags | Token with no repository access | Hourly | `IssueSource` | Cursor does not advance; stops early near the rate limit |
 | LLM provider | One verdict per candidate | Anthropic SDK, or OpenAI-compatible chat endpoint | Your API key: `UPW_LLM_API_KEY`, or pasted into the settings page (the variable wins) | Hourly, capped per run and per day | `Provider` | Candidate stays queued and shows as unreviewed |
 | Your SMTP server | Nothing; we send the digest | SMTP from the standard library; config has host, port, username, password (from an environment variable), from and to | SMTP username and password | Daily, weekly heartbeat | `Notifier` | Digest row marked failed and retried; visible on Coverage |
-| Webhook or ntfy | Nothing; we send the digest | JSON POST | The URL is the secret | Daily, weekly heartbeat | `Notifier` | Digest row marked failed and retried; visible on Coverage |
+| Webhook or ntfy | Nothing; we send the digest | JSON POST (Discord, Slack) or plain-text POST (ntfy) | The URL is the secret | Daily, weekly heartbeat | `Notifier` | Digest row marked failed and retried; visible on Coverage |
 
-None of the OSV, KEV and EPSS requests uses stored validators (`ValidatorsNone`). The adapters bound what they read: an OSV `modified_id.csv` is capped at 256 MiB; the EPSS download is capped at 64 MiB and the CSV after gunzip at 256 MiB, and a feed with more than 1% malformed rows or no `cve,epss,percentile` header is an error; an entry in the KEV catalog without a CVE id is skipped. Errors from the two feeds name the scheme, host and path of the URL, never its query or userinfo.
+None of the OSV, KEV and EPSS requests uses stored validators (`ValidatorsNone`). The adapters bound what they read: an OSV `modified_id.csv` is capped at 256 MiB; the EPSS download is capped at 64 MiB and the CSV after gunzip at 256 MiB, and a feed with more than 1% malformed rows or no `cve,epss,percentile` header is an error; an entry in the KEV catalog without a CVE id is skipped. Errors from the two feeds name the scheme, host and path of the URL, never its query or userinfo. The vulns job refreshes each feed when its last refresh is more than 20 hours old. A failed advisory fetch, delta download or feed refresh does not stop the job: it keeps the stored data, still matches and raises findings, then fails the run with the errors joined, which raises a `job_failure` finding.
 
 In the config, `notify` is a mapping with two keys: `channels`, a list with one entry per notifier, and `heartbeat`, a five-field cron expression for the "all quiet" message. A channel has a `type` (`email`, `discord_webhook`, `slack_webhook`, `ntfy` or `stdout`) and the fields of its type: `url` for the webhook and ntfy types; `host`, `port` (587 by default), `username`, `password`, `from` and `to` for email. The secret fields (a channel's `url`, an email `password`, the tokens and the LLM key) take only a `${NAME}` reference to an environment variable, as in `deploy/upw.example.yaml`, which uses `UPW_SMTP_PASSWORD` for the email password. The config loader holds them as `model.Secret`.
 
-Several notifiers can be enabled at once. A failure in one does not stop the others, because each send is recorded as its own row in `digests` (see [database.md](database.md)).
+Several notifiers can be enabled at once, and several channels of one type are allowed. A failure in one does not stop the others, because each send is recorded as its own row in `digests` (see [database.md](database.md)). A channel whose secret variable is unset is skipped with a warning, and a channel that cannot be built (a malformed URL, an invalid email setting) stops `upw serve` and `upw run` at start-up. The email notifier connects with implicit TLS on port 465 and with STARTTLS on any other port, and refuses a server that offers no TLS unless it is `localhost` or a loopback address; the webhook and ntfy URLs must be https, or http for a loopback host.
 
 ## The shared HTTP client and its policy
 
@@ -53,14 +53,17 @@ Every HTTP adapter sends its requests through `internal/httpx` (the email notifi
 
 ## What `upw doctor` probes
 
-`upw doctor` calls each adapter's `Check` through one `httpx` client with no cache store. It does not open the database, so it cannot see an LLM key saved on the settings page. The probes are:
+`upw doctor` calls each adapter's `Check`, the HTTP ones through one `httpx` client with no cache store. It does not open the database, so it cannot see an LLM key saved on the settings page. The probes, in report order, are:
 
 | Check | Request | Notes |
 |---|---|---|
 | git | `git --version` | Runs with a minimal environment: the secrets in the process environment are not passed to git. |
 | OSV | `GET https://api.osv.dev/v1/vulns/GO-2020-0001` | A small, long-published advisory. |
 | deps.dev | `GET https://api.deps.dev/v3/systems/go/packages/github.com%2Fgoogle%2Fuuid/versions/v1.6.0` | One small, published package version. |
+| KEV | `HEAD` of the catalog URL on `www.cisa.gov` | Does not download the catalog. |
+| EPSS | `HEAD` of the feed URL on `epss.empiricalsecurity.com`, following the redirect | Does not download the feed. |
 | GitHub | `GET https://api.github.com/rate_limit` | Does not count against the rate limit. Run once for each configured token (upstream, targets), or once without a token when neither is set. Proves GitHub accepts the token, not that it can read the private targets. |
+| notify `<channel>` | One check per configured channel, named `notify <channel name>` | Email: connects, upgrades to TLS and authenticates when a username is set, without sending a message. Discord: a `GET` of the webhook URL, which returns its metadata and posts nothing. ntfy: `GET /v1/health` on the server. Slack: validates the URL only, because an incoming webhook has no read-only probe. stdout: reported ok with no probe. A channel whose secret variable is unset gets no check, because the secret line already warns; a channel that cannot be built fails with the reason. |
 
 ## Two GitHub tokens
 

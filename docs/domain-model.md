@@ -60,7 +60,7 @@ The spine is `TargetRepo` to `DepInterval`. Both halves of the product hang off 
 - `DepInterval.Contains(date)` and `IsOpen()` answer "what was pinned on date X" and "is it still pinned".
 - Evaluating version ranges, the fixed version, the confidence label and the exposure window are unexported functions in `internal/vuln`, not methods on `Advisory`. The job table in [architecture.md](architecture.md) places these decisions there.
 - `Verdict.CacheKey()` builds the key that makes sure one issue is judged once per dependency version.
-- `RankAdvisory(AdvisoryRankInput)` scores an advisory finding, `Finding.Transition(StateChange)` is the state machine, `FindingState.Effective(now)` says what state the operator sees, and `ShouldResolve()` (auto-resolve) is still planned. The web handlers, the CLI and the digest all call these, so they agree.
+- `RankAdvisory(AdvisoryRankInput)` scores an advisory finding, `Finding.Transition(StateChange)` is the state machine, `FindingState.Effective(now)` says what state the operator sees, and `ShouldResolve()` (auto-resolve) is still planned. `findings.Service` calls `Transition` for the web handlers, and the web pages, the CLI and the digest call `Effective`, so they agree.
 
 ## Built so far
 

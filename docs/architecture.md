@@ -57,7 +57,7 @@ flowchart TB
       direction LR
       J1["ingest"] --- J2["timeline"] --- J3["usage"] --- J4["vulns"] --- J5["upstream"] --- J6["issues"] --- J7["prefilter"] --- J8["triage"] --- J9["digest"]
     end
-    FND["findings.Service<br/>ack, snooze, dismiss, auto-resolve"]
+    FND["findings.Service<br/>ack, snooze, dismiss, reopen"]
     SET["settings.Service<br/>LLM key, write-only"]
     QRY["query<br/>read services: timeline, coverage, eval, finding detail"]
   end
@@ -86,7 +86,7 @@ flowchart TB
 
   CLI -- "upw run job" --> RUN
   CRON -- "job name, on schedule" --> RUN
-  WEB -- "POST ack, snooze, label" --> FND
+  WEB -- "POST ack, snooze, dismiss, reopen" --> FND
   WEB -- "GET and POST /settings" --> SET
   WEB -- "GET pages" --> QRY
   CLI -- "timeline, findings, export" --> QRY
@@ -131,9 +131,9 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 | `internal/issues` | 2 Service (job) | `Poller`: upstream issues and comments with cursors. Adapter in `issues/github`. |
 | `internal/prefilter` | 2 Service (job) | Feature extraction and weighted score for issue candidates. |
 | `internal/triage` | 2 Service (job) | `Service` and the `Provider` interface: cache key, budget, evidence check, verdicts. May import `internal/llm`. |
-| `internal/report` | 2 Service (job) | The digest: ranking, what changed, and the `Notifier` interface. |
-| `internal/ops` | 2 Service (job) | `Backup`. |
-| `internal/findings` | 2 Service | Ack, snooze, dismiss and auto-resolve. |
+| `internal/report` | 2 Service (job) | The digest job: picks the findings new or changed since they were last reported, renders the digest, sends it through every channel, records each send, resends failed ones and sends the weekly heartbeat. Declares the `Notifier` interface. |
+| `internal/ops` | 2 Service (job) | `Backup`: the nightly database copy and its retention. |
+| `internal/findings` | 2 Service | Ack, snooze, dismiss and reopen, each a `model.Finding.Transition` followed by a store write. Auto-resolve is not built; the vulns job resolves the advisory findings it no longer produces. |
 | `internal/settings` | 2 Service | The LLM key, write-only. The only code that encrypts and decrypts it, and the only user of `SettingsStore`. |
 | `internal/eval` | 2 Service | Eval labels, runs and reports. It declares its own small interface for "judge this candidate", which `triage.Service` satisfies; `cmd/upw` wires them. It imports `model` only and never calls a provider. |
 | `internal/query` | 2 Service | The read services behind the web pages and the read-only CLI commands: timeline, coverage, finding detail, eval report. Imports `model` and declares the store interfaces it needs. |
@@ -151,7 +151,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
-After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. `cmd/upw` registers the ingest and timeline jobs with the Runner, in that order, sharing one `gitsrc` client. M2 has added so far, without a job registered yet: `internal/vuln` (the matching rules and the interfaces the vulns job uses), `internal/vuln/kev` and `internal/vuln/epss` (the two feed adapters), the advisory methods of `internal/vuln/osv`, and the advisory, finding-state, digest and backup methods of `internal/store`. `internal/report`, `internal/findings` and `internal/ops` hold only their package comments and the interfaces their services will use. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end. `cmd/upw` also wraps each job so that it runs under an exclusive lock file, `<data_dir>/locks/<job>.lock`, so a `upw run` beside `upw serve` on one data directory waits until the other process's run of the same job ends, or until its own context ends.
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. M2 adds `internal/vuln` (the matching rules and the vulns job), `internal/vuln/kev` and `internal/vuln/epss` (the two feed adapters), the advisory methods of `internal/vuln/osv`, `internal/report` (the digest job), `internal/findings`, `internal/ops` (the backup job), the five notifier packages under `internal/notify`, and the advisory, finding-state, digest and backup methods of `internal/store`. `cmd/upw` registers five jobs with the Runner, in this order: ingest, timeline, vulns, digest and backup. Ingest and timeline share one `gitsrc` client; the vulns job and the HTTP notifiers share one `httpx` client that keeps its validators in the store. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end. `cmd/upw` also wraps every job so that it runs under one exclusive lock file, `<data_dir>/locks/pipeline.lock`, shared by all jobs, so no two jobs run at once on one data directory: a `upw run` beside `upw serve` waits until the other process's job ends, or until its own context ends (see [decisions.md](decisions.md)).
 
 ## What each job does
 
@@ -167,8 +167,14 @@ Each row is one job: the service that implements it, the pure decisions it makes
 | issues | `issues.Poller` | cursor and backfill bounds | `IssueSource` | upstream_issues, upstream_issue_comments, cursors on upstream_repos |
 | prefilter | `prefilter.Service` | feature extraction and weighted score | nothing external | issue_candidates |
 | triage | `triage.Service` | cache key; budget; evidence is a real quote | `Provider` | llm_verdicts, findings |
-| digest | `report.Service` | ranking; what changed since last digest | `Notifier` (every enabled one) | findings, digests |
-| backup | `ops.Backup` | retention | store only | backup file |
+| digest | `report.Service` | which findings are new or changed since they were last reported; whether the heartbeat is due | `Notifier` (every enabled one) | findings (the reported time), digests; reads runs |
+| backup | `ops.Backup` | retention | store only (`BackupTo`) | backup file |
+
+The vulns job queries OSV for each package version it has not queried before, applies each ecosystem's `modified_id.csv` delta, refreshes the KEV and EPSS feeds when the last refresh is older than 20 hours, rebuilds the advisory matches of the repos in scope, upserts one advisory finding per repo, package and advisory, and resolves the advisory findings of those repos that it no longer produces. The cursors and refresh times are kept in `kv` (`osv.modified.<ecosystem>` and `signals.<kev|epss>.refreshed_at`). A failed record fetch, delta download or feed refresh does not stop the run: matching and findings still run, then the run returns the errors joined, so it is recorded as failed. Its ranking uses `model.RankAdvisory`; the ranking is not part of the digest job.
+
+The digest job first resends each failed digest whose channel is still configured, then builds one digest from the open findings never reported (NEW) or changed since they were reported (CHANGED), marks them reported and sends the digest to every channel in order, recording each send in `digests`. One channel failing does not stop the others; the run then fails, naming the channels, so the failure shows as a `job_failure` finding. When there is nothing to report it sends the "all quiet" heartbeat if the most recent fire time of `notify.heartbeat` is after the last sent digest, and otherwise nothing. With no channel configured the run sends nothing and succeeds with a warning.
+
+The backup job writes `<data_dir>/backups/upw-YYYYMMDD.sqlite` (local date) with `store.DB.BackupTo` unless that file exists, then deletes the oldest files of that name beyond `retention.backups_keep` (7 when not set). Its stats are `exists`, `written` and `deleted`.
 
 The timeline job bounds what a repository can make it hold or store. It reads file contents from `GitSource` 8 files at a time, so at most 64 MiB of file data is held at once (a file over the blob cap, 8 MiB by default, is not read). A file that parses to more than 20,000 dependencies counts as a parse error, and a target run that would produce more than 500,000 new events fails. Before events are computed it drops every dependency whose package name or package URL contains a control character, whitespace, `://` or `@`, counting them in the `deps_dropped` stat, and passes every version and requirement through `model.Redact`. Parse errors are logged redacted.
 
@@ -180,9 +186,9 @@ The timeline job rebuilds a repo from its first commit, instead of walking on fr
 
 | HTTP route | Handled by |
 |---|---|
-| `GET /` | findings list (read) |
+| `GET /` | findings list (read); optional query parameters `repo` (a repo slug), `kind` (`advisory`, `issue` or `job_failure`) and `suppressed=1` (also snoozed and dismissed findings) |
 | `GET /f/{id}` | finding detail (read) |
-| `POST /f/{id}/ack\|snooze\|dismiss` | `findings.Service` |
+| `POST /f/{id}/ack\|snooze\|dismiss\|reopen` | `findings.Service`; the form fields are `note` and, for snooze, `for` (`1d`, `7d` or `30d`) |
 | `POST /f/{id}/label` | `eval.Service` |
 | `GET /repos` | repository list (read) |
 | `GET /repos/{slug}` | timeline (read); optional query parameters `q` (substring of the package URL), `pkg` (exact package URL, the history of one package) and `on` (`YYYY-MM-DD`, only intervals in force at the end of that UTC day) |
@@ -192,7 +198,7 @@ The timeline job rebuilds a repo from its first commit, instead of walking on fr
 | `GET /health` | last runs, JSON |
 | `GET /static/style.css` | the embedded stylesheet |
 
-After M1 the server answers `GET /`, `GET /repos`, `GET /repos/{slug}`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings in state open or acked, highest score first. The pages read through `internal/query`: `web` declares the `TimelineReader` interface (`Repos` and `Timeline`) that `query.Service` satisfies. `GET /repos/{slug}` answers 404 for an unknown slug and 400 for an `on` value that is not a date. The other routes are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set. A host check answers 421 to a request whose `Host` header is not the listen address, a loopback name (`localhost`, `127.0.0.1`, `::1`, the only names answered when the listen host is unspecified, such as `0.0.0.0`) or the host of `http.base_url`; it stops a DNS-rebinding page from reaching the UI. A `http.base_url` with an empty hostname is rejected by config validation and by the server. On shutdown, requests still running after ten seconds have their connections closed.
+After M2 the server answers `GET /`, `GET /f/{id}`, the four `POST /f/{id}/...` routes, `GET /repos`, `GET /repos/{slug}`, `GET /health` and `GET /static/style.css`; `GET /` lists unresolved findings whose state is open or acked, highest score first, and with `suppressed=1` the snoozed and dismissed ones too; the state shown is the effective state, so a snooze that has ended shows as open. The pages read through `internal/query`: `web` declares the `HealthReader`, `FindingsReader` (`Findings` and `FindingDetail`) and `TimelineReader` (`Repos` and `Timeline`) interfaces that `query.Service` satisfies, and the `FindingActions` interface (`Ack`, `Snooze`, `Dismiss`, `Reopen`) that `findings.Service` satisfies. `GET /repos/{slug}` answers 404 for an unknown slug and 400 for an `on` value that is not a date. `GET /` answers 400 for a `kind` that is not one of the three or a `repo` that is not a known slug. `GET /f/{id}` and every POST answer 404 for an ID that is not a number or names no finding. A POST answers 303 to `/f/{id}` on success, 400 for a change the finding does not allow (a resolved finding, or a note over 2000 characters or holding a control character other than newline and tab) or a `for` value that is not `1d`, `7d` or `30d`, and 413 for a body over 16 KiB. The state change is recorded as made by `web`. The other routes (`label`, `/coverage`, `/eval` and `/settings`) are planned for later milestones. Every response carries the security headers, and cross-origin requests that change state are refused by the standard library's cross-origin protection, trusting the origin of `http.base_url` when set. A host check answers 421 to a request whose `Host` header is not the listen address, a loopback name (`localhost`, `127.0.0.1`, `::1`, the only names answered when the listen host is unspecified, such as `0.0.0.0`) or the host of `http.base_url`; it stops a DNS-rebinding page from reaching the UI. A `http.base_url` with an empty hostname is rejected by config validation and by the server. On shutdown, requests still running after ten seconds have their connections closed.
 
 The settings page never shows the stored key. It shows the last four characters only.
 
@@ -203,7 +209,7 @@ The settings page never shows the stored key. It shows the last four characters 
 | `upw serve` | starts Scheduler and web.Server; stops on SIGINT or SIGTERM, web server first, then the scheduler, then the store |
 | `upw run <job>`, `run all -once` | `pipeline.Runner`; `-repo <slug>` limits one job to one target and cannot be used with `all`; `run timeline -rebuild` (with or without `-repo`) discards the stored timeline of the targets in scope and rebuilds it from the first commit, and is refused for any other job |
 | `upw timeline <slug> [package-url] [-on YYYY-MM-DD] [-json]` | `query.Service.Timeline`; prints the repo's dependency intervals as a table, or as a JSON array with `-json`; in the table a package URL, version or manifest path with a control character or invalid UTF-8 is printed in quoted form; `-on` keeps the intervals in force at the end of that UTC day; builds no Runner and starts nothing |
-| `upw findings` | `internal/query` |
+| `upw findings [-json] [-repo <slug>] [-suppressed]` | `query.Service.Findings`; prints the unresolved findings, highest score first, as a table or as a JSON array with `-json`; by default those whose effective state is open or acked, with `-suppressed` the snoozed and dismissed ones too; `-repo` keeps one target's findings and fails for an unknown slug; builds no Runner and starts nothing |
 | `upw llm estimate\|rejudge` | `triage.Service` |
 | `upw eval run\|report\|import` | `eval.Service` (`import` imports labels) |
 | `upw export verdicts\|labels\|state` | store export; one kind per invocation, written to stdout. `upw eval export` is an alias of `upw export labels` |
@@ -211,7 +217,7 @@ The settings page never shows the stored key. It shows the last four characters 
 
 Job errors and stats lines printed to a terminal by `upw run` and the failure detail of `upw doctor` are escaped like `upw timeline` output, except that a newline or tab is kept: a message holding any other control character or invalid UTF-8 is printed in quoted form.
 
-Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M1 the Runner has two jobs, ingest and timeline, so `run all -once` runs those two; a schedule's chain leaves out the jobs not registered yet, so the `ingest` schedule runs ingest then timeline until the usage and upstream jobs exist, and the other schedules' chains are empty until the milestones that add their jobs. The commands `findings`, `llm`, `eval` and `export` are planned for later milestones.
+Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debug, info, warn or error). `upw serve` and `upw run` load the config, open and migrate the database and build the Runner. After M2 the Runner has five jobs, ingest, timeline, vulns, digest and backup, so `run all -once` runs those five in that order; a notify channel that cannot be built (a bad URL, an invalid email setting) stops `upw serve` and `upw run` at start-up, with an error naming the channel and never its secret. A schedule's chain leaves out the jobs not registered yet, so the `ingest` schedule runs ingest then timeline until the usage and upstream jobs exist, the `vulns`, `digest` and `backup` schedules each run their one job, and the `issues` and `llm` schedules' chains are empty until the milestones that add their jobs. The commands `llm`, `eval` and `export` are planned for later milestones.
 
 ### Schedules
 
@@ -224,7 +230,7 @@ Every command takes `-config <path>` (default `upw.yaml`) and `-log-level` (debu
 | 08:00 daily | `digest`: `0 8 * * *` | digest |
 | 03:30 daily | `backup`: `30 3 * * *` | backup |
 
-Each schedule is a five-field cron expression (minute, hour, day of month, month, day of week) evaluated in the process's local time zone, so the compose file sets `TZ`. Seconds fields, descriptors such as `@daily` and a `TZ=` or `CRON_TZ=` prefix are rejected. Defaults are set in `internal/config` and shown in `deploy/upw.example.yaml`. A schedule runs its jobs one after another through the Runner; one job's failure is logged and the next job still runs. A tick is skipped, with a warning, while the previous run of the same schedule is still going. Once `Scheduler.Stop` is called no chain starts and a running chain starts no further job; Stop returns nil when no chain is running, and an error only if its context ends while one still is. `notify.heartbeat` (default `0 8 * * 1`, weekly) is a config key for the "all quiet" message; the scheduler does not run it yet.
+Each schedule is a five-field cron expression (minute, hour, day of month, month, day of week) evaluated in the process's local time zone, so the compose file sets `TZ`. Seconds fields, descriptors such as `@daily` and a `TZ=` or `CRON_TZ=` prefix are rejected. Defaults are set in `internal/config` and shown in `deploy/upw.example.yaml`. A schedule runs its jobs one after another through the Runner; one job's failure is logged and the next job still runs. A tick is skipped, with a warning, while the previous run of the same schedule is still going. Once `Scheduler.Stop` is called no chain starts and a running chain starts no further job; Stop returns nil when no chain is running, and an error only if its context ends while one still is. `notify.heartbeat` (default `0 8 * * 1`, weekly) is a config key for the "all quiet" message. The scheduler does not run it: the digest job decides whether it is due, using `sched.LastFire(expr, now)`, which returns the most recent time at or before `now` at which the expression fires, looking back at most 35 days.
 
 ## Two requests, followed end to end
 
@@ -242,12 +248,12 @@ sequenceDiagram
   You->>TS: POST /f/1843/ack
   TS->>H: forwards to 127.0.0.1:8080
   H->>H: same-origin check, parse form
-  H->>F: Ack(findingID, note)
-  F->>S: FindingStore.Get(id)
+  H->>F: Ack(id, note, by)
+  F->>S: FindingStore.GetFinding(id)
   S-->>F: finding and current state
   F->>D: Transition(open to acked)
   D-->>F: allowed, new state
-  F->>S: FindingStore.SaveState, in one transaction
+  F->>S: FindingStore.SaveFindingState
   F-->>H: ok
   H-->>You: 303 redirect to /f/1843
 ```

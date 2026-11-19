@@ -592,7 +592,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 |---|---|
 | id | |
 | sent_ts | |
-| channel | the notifier that sent it; each enabled channel gets its own row |
+| channel | the notifier that sent it; each enabled channel gets its own row. The name is the channel's type (`email`, `discord_webhook`, `slack_webhook`, `ntfy`, `stdout`), with `#2`, `#3` and so on appended for the second and later channels of one type in the config |
 | status | `sent`, `failed` or `retried`; `retried` marks a failed row whose payload a newer row later sent successfully |
 | payload | JSON; the digest as built, so a failed send can be retried with it |
 | error | text; the failure message when the send failed, NULL when it succeeded |
@@ -628,7 +628,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 |---|---|
 | runs | id, job, started_ts, finished_ts, status, stats (JSON), error |
 | http_cache | url (primary key), etag, last_modified, fetched_ts, status; the validators of conditional requests, one row per exact URL |
-| kv | key (primary key), value; cursors for KEV, EPSS and the OSV `modified_id` files |
+| kv | key (primary key), value; cursors for KEV, EPSS and the OSV `modified_id` files: the vulns job keeps the cursor of each ecosystem under `osv.modified.<ecosystem>` and the time of the last refresh of each exploit feed under `signals.<kev\|epss>.refreshed_at` |
 | schema_migrations | version (primary key), name, checksum, applied_ts; tracks applied migrations; owned by `store.DB` |
 
 ### Constraints the migration adds

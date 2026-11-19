@@ -17,6 +17,8 @@ targets:
     auth: targets                     # targets | upstream | none (default none)
     ecosystems: [golang, docker, github-actions]   # optional allowlist
     allow_private_hosts: false        # true exempts this host from the private-address check (still https only)
+    exclude_paths: []                 # optional; directory prefixes whose manifests are not indexed, e.g. [examples, tools/legacy]
+                                      # (manifests under any testdata, vendor or node_modules directory are always skipped)
   - slug: game
     url: https://github.com/example-org/example-game
     auth: targets

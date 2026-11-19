@@ -118,6 +118,68 @@ func TestLoad_AllowPrivateHostsNotBool(t *testing.T) {
 	}
 }
 
+func TestLoad_ExcludePaths(t *testing.T) {
+	t.Parallel()
+	const yaml = `targets:
+  - slug: app
+    url: https://github.com/example-org/example-server
+    exclude_paths: [examples, "tools/legacy/", "${EXTRA}"]
+  - slug: other
+    url: https://github.com/example-org/example-game
+`
+	cfg, err := loadString(t, yaml, envMap(map[string]string{"EXTRA": "docs/samples"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []Target{
+		{Slug: "app", URL: "https://github.com/example-org/example-server", Auth: "none", ExcludePaths: []string{"examples", "tools/legacy/", "docs/samples"}},
+		{Slug: "other", URL: "https://github.com/example-org/example-game", Auth: "none"},
+	}
+	if !reflect.DeepEqual(cfg.Targets, want) {
+		t.Errorf("Targets = %+v, want %+v", cfg.Targets, want)
+	}
+}
+
+func TestLoad_ExcludePathsValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		paths string
+		want  string
+	}{
+		{name: "empty", paths: `[examples, ""]`, want: "targets[0].exclude_paths[1]: must not be empty"},
+		{name: "leading slash", paths: `[/examples]`, want: `targets[0].exclude_paths[0]: "/examples" must be relative to the repository root, without a leading /`},
+		{name: "dotdot alone", paths: `[".."]`, want: `targets[0].exclude_paths[0]: ".." must not contain a .. segment`},
+		{name: "dotdot inside", paths: `[a/../b]`, want: `targets[0].exclude_paths[0]: "a/../b" must not contain a .. segment`},
+		{name: "dotdot at end", paths: `[a/..]`, want: `targets[0].exclude_paths[0]: "a/.." must not contain a .. segment`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yaml := "targets:\n  - slug: app\n    url: https://github.com/example-org/a\n    exclude_paths: " + tt.paths + "\n"
+			got, err := loadString(t, yaml, noEnv)
+			if err == nil {
+				t.Fatalf("Load(%q) error = nil, want %q", yaml, tt.want)
+			}
+			if err.Error() != tt.want {
+				t.Errorf("Load(%q) error = %q, want %q", yaml, err, tt.want)
+			}
+			if !reflect.DeepEqual(got, Config{}) {
+				t.Errorf("Load(%q) config = %+v, want zero", yaml, got)
+			}
+		})
+	}
+}
+
+func TestLoad_ExcludePathsAccepted(t *testing.T) {
+	t.Parallel()
+	// Names that only contain dots, or ".." inside a segment, are allowed.
+	const yaml = "targets:\n  - slug: app\n    url: https://github.com/example-org/a\n    exclude_paths: [examples/, a..b, ...x, .github/fixtures]\n"
+	if _, err := loadString(t, yaml, noEnv); err != nil {
+		t.Errorf("Load(%q) error = %v, want nil", yaml, err)
+	}
+}
+
 func TestLoad_ExampleDocumentsGitAndPrivateHosts(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "upw.example.yaml"), noEnv)

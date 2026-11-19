@@ -74,7 +74,12 @@ func ingestTargets(cfg config.Config) []model.TargetRepo {
 func timelineTargets(cfg config.Config) []timeline.TargetSettings {
 	targets := make([]timeline.TargetSettings, 0, len(cfg.Targets))
 	for _, t := range cfg.Targets {
-		targets = append(targets, timeline.TargetSettings{Slug: t.Slug, Unity: t.Unity, Ecosystems: t.Ecosystems})
+		targets = append(targets, timeline.TargetSettings{
+			Slug:         t.Slug,
+			Unity:        t.Unity,
+			Ecosystems:   t.Ecosystems,
+			ExcludePaths: t.ExcludePaths,
+		})
 	}
 	return targets
 }

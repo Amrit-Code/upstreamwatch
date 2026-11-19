@@ -82,4 +82,4 @@ Follow the report contract in your agent definition: full report to the report f
 
 ## Rulings
 
-None.
+2026-11-19: `cmd/upw/runjob_test.go` is added to the owned files for the expected-output lines that list timeline stats (insert `files_excluded=0` in sorted position). Keep emitting `files_excluded` when zero, like every other key.

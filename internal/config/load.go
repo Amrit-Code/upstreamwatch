@@ -215,6 +215,7 @@ func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 			Ecosystems:        expandAll(t.Ecosystems, getenv),
 			Unity:             t.Unity,
 			AllowPrivateHosts: t.AllowPrivateHosts,
+			ExcludePaths:      expandAll(t.ExcludePaths, getenv),
 		})
 	}
 

@@ -13,7 +13,8 @@ import (
 )
 
 // fakeExtractor handles paths ending in suffix. Content is whitespace-separated
-// "purl@version" entries; the content "!error" is a parse error.
+// "purl@version" entries, each direct unless it ends in "#indirect"; the
+// content "!error" is a parse error.
 type fakeExtractor struct {
 	patterns  []string
 	suffix    string
@@ -35,8 +36,13 @@ func (f *fakeExtractor) Parse(path string, content []byte) (model.ParsedManifest
 	}
 	pm := model.ParsedManifest{Ecosystem: f.ecosystem, Kind: f.kind}
 	for _, entry := range strings.Fields(text) {
+		entry, indirect := strings.CutSuffix(entry, "#indirect")
 		purl, version, _ := strings.Cut(entry, "@")
-		pm.Dependencies = append(pm.Dependencies, fdep(purl, f.ecosystem, version))
+		d := fdep(purl, f.ecosystem, version)
+		if indirect {
+			d.Direct = model.DirectNo
+		}
+		pm.Dependencies = append(pm.Dependencies, d)
 	}
 	return pm, nil
 }
@@ -279,6 +285,118 @@ func TestRun_FirstRun(t *testing.T) {
 	}
 	checkStats(t, got, map[string]int64{
 		"targets": 1, "commits_walked": 3, "files_read": 4, "events_written": 5, "intervals": 5,
+	})
+}
+
+func TestRun_IndirectBecomesDirect(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod")
+	c2 := commit("c2", 2, "go.mod")
+	git := &fakeGit{
+		heads:   map[string]string{"alpha": "c2"},
+		commits: map[string][]model.Commit{"alpha": {c1, c2}},
+	}
+	git.file(c1, "go.mod", "pkg:golang/a@v1.0.0#indirect")
+	git.file(c2, "go.mod", "pkg:golang/a@v1.0.0")
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha")}}, ts,
+		[]Extractor{goExtractor()}, nil, Options{Targets: []TargetSettings{{Slug: "alpha"}}}, discard())
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	aIndirect := fdep("pkg:golang/a", "golang", "v1.0.0")
+	aIndirect.Direct = model.DirectNo
+	aDirect := fdep("pkg:golang/a", "golang", "v1.0.0")
+	u := onlyApply(t, ts)
+	wantEvents := []model.DepEvent{
+		event(c1, "go.mod", aIndirect, model.ChangeAdded, ""),
+		event(c2, "go.mod", aDirect, model.ChangeChanged, "v1.0.0"),
+	}
+	if !reflect.DeepEqual(u.Events, wantEvents) {
+		t.Errorf("Events = %+v, want %+v", u.Events, wantEvents)
+	}
+	wantIntervals := []model.DepInterval{
+		interval("go.mod", aIndirect, c1, &c2),
+		interval("go.mod", aDirect, c2, nil),
+	}
+	if !reflect.DeepEqual(u.Intervals, wantIntervals) {
+		t.Errorf("Intervals = %+v, want %+v", u.Intervals, wantIntervals)
+	}
+	checkStats(t, got, map[string]int64{
+		"targets": 1, "commits_walked": 2, "files_read": 2, "events_written": 2, "intervals": 2,
+	})
+}
+
+func TestRun_ExcludedPaths(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod", "internal/x/testdata/uv.lock", "vendor/github.com/y/go.mod")
+	// c2 touches only skipped paths: still walked and stored, with no events.
+	c2 := commit("c2", 2, "web/node_modules/z/package-lock.json", "examples/demo/go.mod")
+	c3 := commit("c3", 3, "examples2/go.mod")
+	git := &fakeGit{
+		heads:   map[string]string{"alpha": "c3"},
+		commits: map[string][]model.Commit{"alpha": {c1, c2, c3}},
+	}
+	// Only the indexed paths have blobs: reading any other fails the run.
+	git.file(c1, "go.mod", "pkg:golang/a@v1.0.0")
+	git.file(c3, "examples2/go.mod", "pkg:golang/b@v2.0.0")
+	goExt := goExtractor()
+	lockExt := &fakeExtractor{patterns: []string{"**/uv.lock", "**/package-lock.json"}, suffix: ".lock", ecosystem: "pypi", kind: model.ManifestKindLockfile}
+	ts := &fakeTimelineStore{}
+	s := NewService(git, &fakeRepoStore{repos: map[string]model.TargetRepo{"alpha": testRepo(1, "alpha")}}, ts,
+		[]Extractor{lockExt, goExt}, nil,
+		Options{Targets: []TargetSettings{{Slug: "alpha", ExcludePaths: []string{"examples"}}}}, discard())
+
+	got, err := s.Run(t.Context(), model.Scope{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var read []model.BlobRef
+	for _, call := range git.readCalls {
+		read = append(read, call...)
+	}
+	wantRead := []model.BlobRef{{Commit: "c1", Path: "go.mod"}, {Commit: "c3", Path: "examples2/go.mod"}}
+	if !reflect.DeepEqual(read, wantRead) {
+		t.Errorf("blobs read = %+v, want %+v", read, wantRead)
+	}
+	if want := []string{"go.mod", "examples2/go.mod"}; !reflect.DeepEqual(goExt.offered, want) {
+		t.Errorf("go extractor offered %v, want %v", goExt.offered, want)
+	}
+	if want := []string{"go.mod", "examples2/go.mod"}; !reflect.DeepEqual(lockExt.offered, want) {
+		t.Errorf("lockfile extractor offered %v, want %v", lockExt.offered, want)
+	}
+
+	a1 := fdep("pkg:golang/a", "golang", "v1.0.0")
+	b2 := fdep("pkg:golang/b", "golang", "v2.0.0")
+	want := model.TimelineUpdate{
+		RepoID: 1,
+		Commits: []model.Commit{
+			commit("c1", 1, "go.mod"),
+			{SHA: "c2", CommittedAt: day(2), Subject: "commit c2", Paths: []string{}},
+			c3,
+		},
+		Manifests: map[string]model.ManifestInfo{
+			"go.mod":           {Ecosystem: "golang", Kind: model.ManifestKindManifest},
+			"examples2/go.mod": {Ecosystem: "golang", Kind: model.ManifestKindManifest},
+		},
+		Events: []model.DepEvent{
+			event(c1, "go.mod", a1, model.ChangeAdded, ""),
+			event(c3, "examples2/go.mod", b2, model.ChangeAdded, ""),
+		},
+		Intervals: []model.DepInterval{
+			interval("go.mod", a1, c1, nil),
+			interval("examples2/go.mod", b2, c3, nil),
+		},
+		IndexedSHA: "c3",
+	}
+	if u := onlyApply(t, ts); !reflect.DeepEqual(u, want) {
+		t.Errorf("ApplyTimeline update =\n%+v\nwant\n%+v", u, want)
+	}
+	checkStats(t, got, map[string]int64{
+		"targets": 1, "commits_walked": 3, "files_read": 2, "files_excluded": 4,
+		"events_written": 2, "intervals": 2,
 	})
 }
 

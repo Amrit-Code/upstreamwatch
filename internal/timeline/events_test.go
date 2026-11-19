@@ -2,6 +2,7 @@ package timeline
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,10 @@ func TestDiff(t *testing.T) {
 	bV1 := dep("pkg:golang/b", "v1.0.0", "v1.0.0", model.DirectNo, "")
 	reqOld := dep("pkg:pypi/c", "", ">=1.0", model.DirectYes, "")
 	reqNew := dep("pkg:pypi/c", "", ">=2.0", model.DirectYes, "")
-	aIndirect := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectNo, "test")
+	aIndirect := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectNo, "runtime")
+	aUnknown := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectUnknown, "runtime")
+	aTestScope := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectYes, "test")
+	aIndirectTest := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectNo, "test")
 
 	tests := []struct {
 		name      string
@@ -88,11 +92,32 @@ func TestDiff(t *testing.T) {
 			wantState: repoState{"requirements.txt": {"pkg:pypi/c": reqNew}},
 		},
 		{
-			name:      "direct and scope only change emits nothing and keeps state",
+			name:      "direct only change emits changed",
+			prev:      repoState{"go.mod": {"pkg:golang/a": aIndirect}},
+			changes:   []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aV1}}},
+			want:      []model.DepEvent{event(c, "go.mod", aV1, model.ChangeChanged, "v1.0.0")},
+			wantState: repoState{"go.mod": {"pkg:golang/a": aV1}},
+		},
+		{
+			name:      "direct to unknown emits changed",
 			prev:      repoState{"go.mod": {"pkg:golang/a": aV1}},
-			changes:   []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aIndirect}}},
+			changes:   []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aUnknown}}},
+			want:      []model.DepEvent{event(c, "go.mod", aUnknown, model.ChangeChanged, "v1.0.0")},
+			wantState: repoState{"go.mod": {"pkg:golang/a": aUnknown}},
+		},
+		{
+			name:      "scope only change emits nothing and keeps state",
+			prev:      repoState{"go.mod": {"pkg:golang/a": aV1}},
+			changes:   []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aTestScope}}},
 			want:      nil,
 			wantState: repoState{"go.mod": {"pkg:golang/a": aV1}},
+		},
+		{
+			name:      "direct and scope change emits changed with the new scope",
+			prev:      repoState{"go.mod": {"pkg:golang/a": aV1}},
+			changes:   []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aIndirectTest}}},
+			want:      []model.DepEvent{event(c, "go.mod", aIndirectTest, model.ChangeChanged, "v1.0.0")},
+			wantState: repoState{"go.mod": {"pkg:golang/a": aIndirectTest}},
 		},
 		{
 			name: "deleted manifest removes every package",
@@ -313,6 +338,99 @@ func TestFilterDeps(t *testing.T) {
 				t.Errorf("filterDeps() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDiffThenFold_IndirectBecomesDirect(t *testing.T) {
+	t.Parallel()
+	c1, c2 := commit("c1", 1, "go.mod"), commit("c2", 2, "go.mod")
+	aIndirect := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectNo, "")
+	aDirect := dep("pkg:golang/a", "v1.0.0", "v1.0.0", model.DirectYes, "")
+
+	st := repoState{}
+	var events []model.DepEvent
+	events = append(events, diffCommit(c1, st, []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aIndirect}}})...)
+	events = append(events, diffCommit(c2, st, []manifestChange{{Path: "go.mod", Deps: []model.Dependency{aDirect}}})...)
+
+	got := fold(events)
+	want := []model.DepInterval{
+		interval("go.mod", aIndirect, c1, &c2),
+		interval("go.mod", aDirect, c2, nil),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fold(diffCommit(...)) = %+v, want %+v", got, want)
+	}
+	if got[1].Direct != model.DirectYes {
+		t.Errorf("second interval Direct = %v, want DirectYes", got[1].Direct)
+	}
+}
+
+func TestExcludedPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path     string
+		prefixes []string
+		want     bool
+	}{
+		{path: "go.mod", want: false},
+		{path: "internal/x/testdata/uv.lock", want: true},
+		{path: "testdata/go.mod", want: true},
+		{path: "vendor/github.com/y/go.mod", want: true},
+		{path: "web/node_modules/z/package-lock.json", want: true},
+		{path: "a/b/vendor/c/go.mod", want: true},
+		// Only directory segments count, not the file name.
+		{path: "testdata", want: false},
+		{path: "src/vendor", want: false},
+		// Names that merely contain a skipped name are not skipped.
+		{path: "mytestdata/go.mod", want: false},
+		{path: "vendored/go.mod", want: false},
+		{path: "Vendor/go.mod", want: false},
+		{path: "examples/demo/go.mod", prefixes: []string{"examples"}, want: true},
+		{path: "examples/go.mod", prefixes: []string{"examples"}, want: true},
+		{path: "examples/go.mod", prefixes: []string{"examples/"}, want: true},
+		{path: "examples/a/go.mod", prefixes: []string{"examples/"}, want: true},
+		{path: "examples2/go.mod", prefixes: []string{"examples"}, want: false},
+		{path: "examples2/go.mod", prefixes: []string{"examples/"}, want: false},
+		{path: "tools/legacy/go.mod", prefixes: []string{"tools/legacy"}, want: true},
+		{path: "tools/go.mod", prefixes: []string{"tools/legacy"}, want: false},
+		{path: "tools/legacy", prefixes: []string{"tools/legacy"}, want: true},
+		{path: "docs/go.mod", prefixes: []string{"examples", "docs"}, want: true},
+		{path: "go.mod", prefixes: []string{"examples"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path+" "+strings.Join(tt.prefixes, ","), func(t *testing.T) {
+			t.Parallel()
+			if got := excludedPath(tt.path, tt.prefixes); got != tt.want {
+				t.Errorf("excludedPath(%q, %q) = %v, want %v", tt.path, tt.prefixes, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDropExcluded(t *testing.T) {
+	t.Parallel()
+	c1 := commit("c1", 1, "go.mod", "vendor/x/go.mod", "examples/go.mod")
+	c2 := commit("c2", 2, "testdata/go.mod")
+	c3 := commit("c3", 3, "Dockerfile")
+	in := []model.Commit{c1, c2, c3}
+
+	got, n := dropExcluded(in, []string{"examples"})
+	want := []model.Commit{
+		commit("c1", 1, "go.mod"),
+		{SHA: "c2", CommittedAt: day(2), Subject: "commit c2", Paths: []string{}},
+		c3,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dropExcluded() commits = %+v, want %+v", got, want)
+	}
+	if n != 3 {
+		t.Errorf("dropExcluded() dropped = %d, want 3", n)
+	}
+	if want := []string{"go.mod", "vendor/x/go.mod", "examples/go.mod"}; !reflect.DeepEqual(in[0].Paths, want) {
+		t.Errorf("input commit Paths = %v, want unchanged %v", in[0].Paths, want)
+	}
+	if got, n := dropExcluded(nil, nil); len(got) != 0 || n != 0 {
+		t.Errorf("dropExcluded(nil) = %v, %d, want empty, 0", got, n)
 	}
 }
 

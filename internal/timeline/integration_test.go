@@ -40,6 +40,8 @@ type target struct {
 	url    string
 	branch string
 	unity  bool
+	// exclude is the target's exclude_paths.
+	exclude []string
 }
 
 // stack is the whole ingest and timeline stack over one temp data directory.
@@ -97,7 +99,7 @@ func (s *stack) retarget(targets ...target) {
 	var settings []timeline.TargetSettings
 	for _, tg := range targets {
 		repos = append(repos, model.TargetRepo{Slug: tg.slug, URL: tg.url, Branch: tg.branch})
-		settings = append(settings, timeline.TargetSettings{Slug: tg.slug, Unity: tg.unity})
+		settings = append(settings, timeline.TargetSettings{Slug: tg.slug, Unity: tg.unity, ExcludePaths: tg.exclude})
 	}
 	ing := ingest.NewService(s.git, s.db, ingest.Options{
 		Targets: repos,
@@ -814,6 +816,74 @@ func TestTimeline_RewrittenHistory(t *testing.T) {
 	// The rebuilt timeline is incremental again on the next run.
 	next := s.sync()
 	checkStats(t, next, map[string]int64{"resets": 0, "commits_walked": 0, "events_written": 0})
+}
+
+func TestTimeline_IndirectBecomesDirect(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", goMod("example.com/a v1.0.0 // indirect"))
+	c1 := up.Commit("add a as indirect", day(1))
+	up.Write("go.mod", goMod("example.com/a v1.0.0"))
+	c2 := up.Commit("require a directly", day(2))
+
+	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main"})
+	run := s.sync()
+	checkStats(t, run, map[string]int64{"commits_walked": 2, "events_written": 2, "files_excluded": 0})
+
+	wantEvents := []ev{
+		{c1, day(1), "go.mod", purlA, model.ChangeAdded, "v1.0.0", ""},
+		{c2, day(2), "go.mod", purlA, model.ChangeChanged, "v1.0.0", "v1.0.0"},
+	}
+	if got := evs(s.events("app")); !reflect.DeepEqual(got, wantEvents) {
+		t.Errorf("events =\n%+v\nwant\n%+v", got, wantEvents)
+	}
+	intervals := s.intervals("app")
+	wantIntervals := []iv{
+		{"go.mod", purlA, "v1.0.0", c1, day(1), c2, day(2)},
+		{"go.mod", purlA, "v1.0.0", c2, day(2), "", time.Time{}},
+	}
+	if got := ivs(intervals); !reflect.DeepEqual(got, wantIntervals) {
+		t.Fatalf("intervals =\n%+v\nwant\n%+v", got, wantIntervals)
+	}
+	if intervals[0].Direct != model.DirectNo {
+		t.Errorf("first interval Direct = %v, want DirectNo", intervals[0].Direct)
+	}
+	if intervals[1].Direct != model.DirectYes {
+		t.Errorf("second interval Direct = %v, want DirectYes", intervals[1].Direct)
+	}
+}
+
+func TestTimeline_ExcludedPaths(t *testing.T) {
+	t.Parallel()
+	up := gitrepo.New(t, "main")
+	up.Write("go.mod", goMod("example.com/a v1.0.0"))
+	up.Write("testdata/requirements.txt", "requests==2.31.0\n")
+	up.Write("internal/x/testdata/go.mod", goMod("example.com/fixture v0.1.0"))
+	up.Write("examples/demo/requirements.txt", "flask==3.0.0\n")
+	up.Write("examples2/requirements.txt", "click==8.1.7\n")
+	c1 := up.Commit("first", day(1))
+	// A commit that touches only skipped manifests is walked but adds nothing.
+	up.Write("testdata/requirements.txt", "requests==2.32.0\n")
+	up.Commit("bump fixture", day(2))
+
+	s := newStack(t, true, target{slug: "app", url: up.URL(), branch: "main", exclude: []string{"examples"}})
+	run := s.sync()
+	checkStats(t, run, map[string]int64{
+		"commits_walked": 2, "files_read": 2, "files_excluded": 4, "events_written": 2, "intervals": 2,
+	})
+
+	wantIntervals := []iv{
+		{"go.mod", purlA, "v1.0.0", c1, day(1), "", time.Time{}},
+		{"examples2/requirements.txt", "pkg:pypi/click", "8.1.7", c1, day(1), "", time.Time{}},
+	}
+	if got := ivs(s.intervals("app")); !reflect.DeepEqual(got, wantIntervals) {
+		t.Errorf("intervals =\n%+v\nwant\n%+v", got, wantIntervals)
+	}
+	for _, e := range s.events("app") {
+		if strings.Contains(e.ManifestPath, "testdata/") || strings.HasPrefix(e.ManifestPath, "examples/") {
+			t.Errorf("event for a skipped manifest: %+v", e)
+		}
+	}
 }
 
 // The clone directory is never the fixture: a sanity check that the stack

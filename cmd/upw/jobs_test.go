@@ -110,11 +110,11 @@ func TestTimelineTargets(t *testing.T) {
 	t.Parallel()
 	cfg := config.Config{Targets: []config.Target{
 		{Slug: "server", URL: "https://github.com/example-org/example-server", Auth: "targets", Ecosystems: []string{"golang", "docker"}},
-		{Slug: "game", URL: "https://github.com/example-org/example-game", Auth: "none", Unity: true},
+		{Slug: "game", URL: "https://github.com/example-org/example-game", Auth: "none", Unity: true, ExcludePaths: []string{"examples", "tools/legacy/"}},
 	}}
 	want := []timeline.TargetSettings{
 		{Slug: "server", Ecosystems: []string{"golang", "docker"}},
-		{Slug: "game", Unity: true},
+		{Slug: "game", Unity: true, ExcludePaths: []string{"examples", "tools/legacy/"}},
 	}
 	if got := timelineTargets(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("timelineTargets() = %+v, want %+v", got, want)

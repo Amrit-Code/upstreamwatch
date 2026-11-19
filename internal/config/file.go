@@ -37,6 +37,8 @@ type fileTarget struct {
 	// AllowPrivateHosts exempts the target's host from the private-address
 	// check.
 	AllowPrivateHosts bool `yaml:"allow_private_hosts"`
+	// ExcludePaths are directory prefixes whose manifests are not indexed.
+	ExcludePaths []string `yaml:"exclude_paths"`
 }
 
 type fileSchedules struct {

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -114,7 +115,24 @@ func (c Config) validate() []error {
 		add("notify.heartbeat: %q is not a five-field cron expression", c.Notify.Heartbeat)
 	}
 
+	if c.Git.MaxCloneMB < 1 {
+		add("git.max_clone_mb: must be at least 1, got %d", c.Git.MaxCloneMB)
+	}
+
 	return errs
+}
+
+// positiveDuration parses s as a Go duration such as 30m and requires it to
+// be positive. Errors start with field.
+func positiveDuration(field, s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a duration such as 30m or 1h30m", field, s)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s: must be positive, got %s", field, s)
+	}
+	return d, nil
 }
 
 // checkHostPort reports whether s parses as host:port with a numeric port.

@@ -14,6 +14,7 @@ type fileConfig struct {
 	LLM       fileLLM       `yaml:"llm"`
 	Notify    fileNotify    `yaml:"notify"`
 	Retention fileRetention `yaml:"retention"`
+	Git       fileGit       `yaml:"git"`
 }
 
 type fileHTTP struct {
@@ -33,6 +34,9 @@ type fileTarget struct {
 	Auth       string   `yaml:"auth"`
 	Ecosystems []string `yaml:"ecosystems"`
 	Unity      bool     `yaml:"unity"`
+	// AllowPrivateHosts exempts the target's host from the private-address
+	// check.
+	AllowPrivateHosts bool `yaml:"allow_private_hosts"`
 }
 
 type fileSchedules struct {
@@ -114,6 +118,14 @@ type fileRetention struct {
 	IssuesClosedKeepDays int `yaml:"issues_closed_keep_days"`
 }
 
+// fileGit keeps the timeouts as written, Go duration strings, so a bad value
+// is reported with its field like every other validation problem.
+type fileGit struct {
+	MaxCloneMB   int    `yaml:"max_clone_mb"`
+	CloneTimeout string `yaml:"clone_timeout"`
+	FetchTimeout string `yaml:"fetch_timeout"`
+}
+
 // defaultEmailPort is the SMTP submission port used when an email channel
 // sets none.
 const defaultEmailPort = 587
@@ -157,6 +169,11 @@ func defaultFile() fileConfig {
 		Retention: fileRetention{
 			BackupsKeep:          7,
 			IssuesClosedKeepDays: 730,
+		},
+		Git: fileGit{
+			MaxCloneMB:   2048,
+			CloneTimeout: "30m",
+			FetchTimeout: "10m",
 		},
 	}
 }

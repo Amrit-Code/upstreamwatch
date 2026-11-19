@@ -64,7 +64,7 @@ func TestService_LastRuns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := NewService(tt.store, &fakeFindingStore{}, discardLogger())
+			s := NewService(tt.store, &fakeFindingStore{}, &fakeTimelineStore{}, discardLogger())
 			got, err := s.LastRuns(t.Context())
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -110,7 +110,7 @@ func TestService_OpenFindings(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := NewService(&fakeRunStore{}, tt.store, discardLogger())
+			s := NewService(&fakeRunStore{}, tt.store, &fakeTimelineStore{}, discardLogger())
 			got, err := s.OpenFindings(t.Context())
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {

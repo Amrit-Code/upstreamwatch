@@ -1,6 +1,10 @@
 package config
 
-import "github.com/Amrit-Code/upstreamwatch/internal/model"
+import (
+	"time"
+
+	"github.com/Amrit-Code/upstreamwatch/internal/model"
+)
 
 // Config is the loaded, expanded and validated configuration. Load returns it;
 // cmd/upw copies the parts each service needs into that service's Options.
@@ -17,6 +21,7 @@ type Config struct {
 	LLM       LLM
 	Notify    Notify
 	Retention Retention
+	Git       Git
 }
 
 // HTTP is the web UI listener. BaseURL, when set, is used in digest links.
@@ -34,6 +39,7 @@ type Target struct {
 	Auth              TargetAuth // "targets" | "upstream" | "none"
 	Ecosystems        []string
 	Unity             bool
+	AllowPrivateHosts bool // exempts this target's host from the private-address check
 }
 
 // TargetAuth names the token used to fetch a target: "targets", "upstream"
@@ -124,4 +130,12 @@ type Channel struct {
 type Retention struct {
 	BackupsKeep          int
 	IssuesClosedKeepDays int
+}
+
+// Git limits the bare clones of the targets: MaxCloneMB caps one clone's size
+// in MiB, CloneTimeout bounds a first sync and FetchTimeout every later one.
+type Git struct {
+	MaxCloneMB   int
+	CloneTimeout time.Duration
+	FetchTimeout time.Duration
 }

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 )
@@ -69,6 +70,7 @@ func wantDefaults(dataDir string) Config {
 		},
 		Notify:    Notify{Heartbeat: "0 8 * * 1"},
 		Retention: Retention{BackupsKeep: 7, IssuesClosedKeepDays: 730},
+		Git:       Git{MaxCloneMB: 2048, CloneTimeout: 30 * time.Minute, FetchTimeout: 10 * time.Minute},
 	}
 }
 
@@ -213,8 +215,14 @@ func TestLoad_DevConfig(t *testing.T) {
 	if got, want := cfg.DataDir, "./data-dev"; got != want {
 		t.Errorf("DataDir = %q, want %q", got, want)
 	}
-	if len(cfg.Targets) != 0 {
-		t.Errorf("Targets = %+v, want none", cfg.Targets)
+	wantTargets := []Target{
+		{Slug: "glow", URL: "https://github.com/charmbracelet/glow", Auth: "none"},
+		{Slug: "cleo", URL: "https://github.com/python-poetry/cleo", Auth: "none"},
+		{Slug: "naughtyattributes", URL: "https://github.com/dbrizov/NaughtyAttributes", Auth: "none", Unity: true},
+		{Slug: "upstreamwatch", URL: "https://github.com/Amrit-Code/upstreamwatch", Auth: "none"},
+	}
+	if !reflect.DeepEqual(cfg.Targets, wantTargets) {
+		t.Errorf("Targets = %+v, want %+v", cfg.Targets, wantTargets)
 	}
 	if cfg.LLM.Enabled {
 		t.Error("LLM.Enabled = true, want false")

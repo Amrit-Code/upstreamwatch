@@ -4,7 +4,20 @@ data_dir: ./data-dev
 http:
   listen: 127.0.0.1:8080
 
-targets: []
+targets:                               # public repositories, fetched without a token
+  - slug: glow
+    url: https://github.com/charmbracelet/glow
+    auth: none
+  - slug: cleo
+    url: https://github.com/python-poetry/cleo
+    auth: none
+  - slug: naughtyattributes
+    url: https://github.com/dbrizov/NaughtyAttributes
+    auth: none
+    unity: true
+  - slug: upstreamwatch
+    url: https://github.com/Amrit-Code/upstreamwatch
+    auth: none
 
 llm:
   enabled: false

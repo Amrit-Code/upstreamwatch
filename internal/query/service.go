@@ -9,17 +9,18 @@ import (
 )
 
 // Service answers the read-only questions of the web pages and the CLI. It
-// returns what the store holds and adds no logic.
+// returns what the store holds and adds no logic beyond filtering.
 type Service struct {
 	runs     RunStore
 	findings FindingStore
+	timeline TimelineStore
 	logger   *slog.Logger
 }
 
-// NewService returns a Service that reads runs and findings from the given
-// stores.
-func NewService(runs RunStore, findings FindingStore, logger *slog.Logger) *Service {
-	return &Service{runs: runs, findings: findings, logger: logger}
+// NewService returns a Service that reads runs, findings, and repos with
+// their dependency intervals from the given stores.
+func NewService(runs RunStore, findings FindingStore, timeline TimelineStore, logger *slog.Logger) *Service {
+	return &Service{runs: runs, findings: findings, timeline: timeline, logger: logger}
 }
 
 // LastRuns returns the most recent run of each job, ordered by job name.

@@ -74,7 +74,7 @@ func TestIntegration_ServiceReadsWhatRunnerWrote(t *testing.T) {
 			t.Fatalf("Run(ingest) error = %v, want %v", err, jobErr)
 		}
 
-		svc := query.NewService(db, db, slog.New(slog.DiscardHandler))
+		svc := query.NewService(db, db, db, slog.New(slog.DiscardHandler))
 
 		gotRuns, err := svc.LastRuns(ctx)
 		if err != nil {
@@ -155,7 +155,7 @@ func TestIntegration_ServiceOrdersFindingsAndDropsResolved(t *testing.T) {
 			t.Fatalf("Run(mid) after recovery error = %v", err)
 		}
 
-		got, err := query.NewService(db, db, slog.New(slog.DiscardHandler)).OpenFindings(ctx)
+		got, err := query.NewService(db, db, db, slog.New(slog.DiscardHandler)).OpenFindings(ctx)
 		if err != nil {
 			t.Fatalf("OpenFindings() error = %v", err)
 		}
@@ -173,7 +173,7 @@ func TestIntegration_ServiceOrdersFindingsAndDropsResolved(t *testing.T) {
 func TestIntegration_ServiceOnEmptyStore(t *testing.T) {
 	t.Parallel()
 	db := openDB(t)
-	svc := query.NewService(db, db, slog.New(slog.DiscardHandler))
+	svc := query.NewService(db, db, db, slog.New(slog.DiscardHandler))
 	runs, err := svc.LastRuns(t.Context())
 	if err != nil || runs != nil {
 		t.Errorf("LastRuns() on an empty store = %+v, %v; want nil, nil", runs, err)
@@ -197,7 +197,7 @@ func TestIntegration_ServiceOnClosedStore(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	svc := query.NewService(db, db, slog.New(slog.DiscardHandler))
+	svc := query.NewService(db, db, db, slog.New(slog.DiscardHandler))
 	if _, err := svc.LastRuns(t.Context()); err == nil {
 		t.Errorf("LastRuns() on a closed store error = nil, want an error")
 	}

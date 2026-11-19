@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -124,7 +125,8 @@ func secret(field, raw string, getenv func(string) string) (model.Secret, error)
 }
 
 // convert builds the typed Config from the decoded file, expanding string
-// values and resolving secrets. It returns one error per literal secret.
+// values, resolving secrets and parsing durations. It returns one error per
+// literal secret and per duration that does not parse or is not positive.
 func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 	var errs []error
 	sec := func(field, raw string) model.Secret {
@@ -135,6 +137,13 @@ func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 		return s
 	}
 	ex := func(s string) string { return expand(s, getenv) }
+	dur := func(field, raw string) time.Duration {
+		d, err := positiveDuration(field, ex(raw))
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return d
+	}
 
 	cfg := Config{
 		DataDir: ex(f.DataDir),
@@ -186,6 +195,11 @@ func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 			BackupsKeep:          f.Retention.BackupsKeep,
 			IssuesClosedKeepDays: f.Retention.IssuesClosedKeepDays,
 		},
+		Git: Git{
+			MaxCloneMB:   f.Git.MaxCloneMB,
+			CloneTimeout: dur("git.clone_timeout", f.Git.CloneTimeout),
+			FetchTimeout: dur("git.fetch_timeout", f.Git.FetchTimeout),
+		},
 	}
 
 	for _, t := range f.Targets {
@@ -194,12 +208,13 @@ func convert(f fileConfig, getenv func(string) string) (Config, []error) {
 			auth = "none"
 		}
 		cfg.Targets = append(cfg.Targets, Target{
-			Slug:       ex(t.Slug),
-			URL:        ex(t.URL),
-			Branch:     ex(t.Branch),
-			Auth:       auth,
-			Ecosystems: expandAll(t.Ecosystems, getenv),
-			Unity:      t.Unity,
+			Slug:              ex(t.Slug),
+			URL:               ex(t.URL),
+			Branch:            ex(t.Branch),
+			Auth:              auth,
+			Ecosystems:        expandAll(t.Ecosystems, getenv),
+			Unity:             t.Unity,
+			AllowPrivateHosts: t.AllowPrivateHosts,
 		})
 	}
 

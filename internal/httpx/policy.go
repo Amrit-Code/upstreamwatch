@@ -39,6 +39,11 @@ var (
 	v4Compat  = netip.MustParsePrefix("::/96")        // IPv4-compatible, IPv4 in the last 4 bytes
 )
 
+// BlockedAddr reports whether the address policy refuses a connection to a.
+// internal/gitsrc applies it to a git remote's resolved addresses, because
+// git dials for itself and this client's dialer never sees those connections.
+func BlockedAddr(a netip.Addr) bool { return blockedAddr(a) }
+
 // blockedAddr reports whether the address policy refuses a connection to a.
 func blockedAddr(a netip.Addr) bool {
 	a = a.Unmap().WithZone("")

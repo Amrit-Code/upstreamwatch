@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -245,7 +246,11 @@ func TestMigrate_SchemaTooNew(t *testing.T) {
 	if !errors.Is(err, ErrSchemaTooNew) {
 		t.Fatalf("Migrate() error = %v, want ErrSchemaTooNew", err)
 	}
-	want := "database schema is newer than this binary: database at version 9999, binary knows 1"
+	files, err2 := loadMigrations(migrationFiles)
+	if err2 != nil {
+		t.Fatalf("loadMigrations() error = %v", err2)
+	}
+	want := fmt.Sprintf("database schema is newer than this binary: database at version 9999, binary knows %d", files[len(files)-1].version)
 	if err.Error() != want {
 		t.Errorf("Migrate() error = %q, want %q", err.Error(), want)
 	}

@@ -33,6 +33,27 @@ Rulings the lead session made while building M0, in the work orders under `.clau
 - One `job_failure` finding per job. Its fingerprint is `job_failure|<job>` (the plan's `kind|repo|package|advisory_or_issue` form has no repo, package or advisory to fill for a failed job). A failed run raises or refreshes the finding; the next successful run of the same job resolves it.
 - `httpx`, the shared HTTP client, was built in M0 and not in M2 as the plan's milestones place it. It brings `model.HTTPValidator` and the `httpx.CacheStore` interface, implemented by `store.DB` over the `http_cache` table. Its address policy follows the rulings in the httpx work order: see [external-sources.md](external-sources.md).
 
+## Owner decisions, 2026-11-19 (start of M1)
+
+- M1 starts while one M0 item is still open: the owner will put the real GitHub tokens on the VM and `upw doctor` is then rerun (M0 checklist item 23). M0 is tagged `m0` after that.
+- The low M0 security finding (job error text shown unredacted on `/health` and the findings page) is waived for M0 and fixed in M1 (M1 checklist item 16).
+- The made-up `github_pat_...` test strings in early commits of the public history stay; the history is not rewritten.
+
+## Lead decisions for M1
+
+Rulings the lead session made while planning M1, in the work orders under `.claude/plans/m1/`.
+
+- First sync creates the clone with `git init --bare` and fetches only the indexed branch (`+refs/heads/<b>:refs/heads/<b>`, no tags), instead of `git clone --bare`. Every fetch passes the URL explicitly, so no remote URL is stored in the clone's config and a URL change in config takes effect on the next fetch.
+- `go.mod` is parsed with `golang.org/x/mod/modfile`, not the `manifests` library, because the library (v0.14.0) ignores `replace` directives and the `go` and `toolchain` lines. Dockerfiles and compose files are parsed by upstreamwatch's own code, because the library reports build-stage names (`FROM builder`) as images and drops the tag of an image pinned by digest. The library is used for every other format.
+- The manifest event diff compares version and requirement. A change of only the direct flag or scope emits no event.
+- A lockfile cannot tell direct from transitive dependencies, so its entries are stored with `direct` NULL. The matching manifest (pyproject.toml, `Packages/manifest.json`) records the same packages as direct with their requirement.
+- When one file names the same package twice (two `FROM golang:` stages with different tags), the first occurrence in the file wins.
+- A manifest that fails to parse at a commit produces no events at that commit; its previous state stands.
+- `dep_versions` gains a `requirement` column (migration `0002_timeline.sql`), and a unique index on repo, manifest, package and opening commit. A timeline run keeps the row ID of every interval whose identity is unchanged, so advisory matches and findings keep pointing at it.
+- If a fetched branch no longer contains the last indexed commit (history rewritten), the timeline for that repo is rebuilt from the root.
+- `internal/gitsrc` uses `httpx.BlockedAddr` for the private-address check, so git remotes and HTTP adapters refuse the same ranges. `internal/extract` may use the YAML library, for compose files.
+- `targets[].allow_private_hosts: true` exempts one target's host from the private-address check; the URL must still be https.
+
 ## The eight accepted changes
 
 | Change | Why |

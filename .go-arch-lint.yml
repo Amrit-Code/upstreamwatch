@@ -99,7 +99,8 @@ deps:
     canUse: [ vers ]
   triage:
     mayDependOn: [ llm ]
-  extract:          { canUse: [ manifests, xmod ] }
+  gitsrc:           { mayDependOn: [ httpx ] }
+  extract:          { canUse: [ manifests, xmod, yaml ] }
   vuln-osv:         { mayDependOn: [ httpx ], canUse: [ osvlib ] }
   vuln-kev:         { mayDependOn: [ httpx ] }
   vuln-epss:        { mayDependOn: [ httpx ] }

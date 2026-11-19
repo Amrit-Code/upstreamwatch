@@ -2,7 +2,7 @@
 
 Source: PLAN.md section 10 (M1) with sections 5.1 to 5.3, adjusted for the owner's decisions of 2026-11-19 (Mac builds, VM for deployment) and the accepted design (`ingest` and `timeline` as separate jobs behind `pipeline.Runner`, git access only through `GitSource`).
 
-Conventions: run from the repository root on the Mac unless Who says VM. `upw` is the binary built from `./cmd/upw` with the dev config `upw.dev.yaml`. `<fixture>` is a public fixture target slug; `<target>` is a private target configured only on the VM. `<db>` is the SQLite file in the data directory. Status is changed only by the lead (see SKILL.md).
+Conventions: run from the repository root on the Mac unless Who says VM. The public fixtures (2026-11-19) are `glow` (`github.com/charmbracelet/glow`: Go, GitHub Actions, Dockerfile), `cleo` (`github.com/python-poetry/cleo`: pyproject, poetry.lock), `naughtyattributes` (`github.com/dbrizov/NaughtyAttributes`: Unity) and `upstreamwatch` (this repository: go.mod with a `golang:` base image, compose, Actions), all MIT; they are listed in `upw.dev.yaml`. The parity fixtures for item 11 are `glow` and `cleo`. `upw` is the binary built from `./cmd/upw` with the dev config `upw.dev.yaml`. `<fixture>` is a public fixture target slug; `<target>` is a private target configured only on the VM. `<db>` is the SQLite file in the data directory. Status is changed only by the lead (see SKILL.md).
 
 | # | Item | Command or observation | Expected | Who | Status | Evidence |
 |---|---|---|---|---|---|---|
@@ -21,5 +21,6 @@ Conventions: run from the repository root on the Mac unless Who says VM. `upw` i
 | 13 | Fetch failure surfaces | point a fixture target at an unreachable https host and run `upw run ingest` | run recorded as failed and a `job_failure` finding created; the timeline stays at the last good commit | lead | open | |
 | 14 | Private targets indexed | on the VM: `docker compose exec upw upw run ingest` then `upw run timeline` | every `<target>` indexed in one run with no errors | owner (VM, targets token) | open | |
 | 15 | Real histories correct | on the VM UI, `/repos/<target>` for the Go server target, the Unity target and a Python target | the `golang:` base-image bumps, the Unity editor version history and the Python lock history appear as intervals with correct dates | owner (VM) | open | |
+| 16 | Job error text redacted | `go test -race -run Redact ./internal/pipeline/`; then a job failing with an error that contains `https://user:secret@host/x` and `github_pat_` followed by 20 characters | ok; the `runs.error` row, the `job_failure` finding's rank reason and the log line show neither the password nor the token (M0 security finding, waived for M0 by the owner on 2026-11-19 and fixed here) | lead | open | |
 
 Security review: open.

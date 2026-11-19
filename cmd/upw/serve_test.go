@@ -130,9 +130,13 @@ func TestServe_HealthAndShutdown(t *testing.T) {
 		t.Fatalf("serve exit code = %d, want 0; stderr:\n%s", code, stderr)
 	}
 
-	// The one embedded migration is applied once and recorded as one row.
-	if n := strings.Count(stderr, `msg="migration applied"`); n != 1 {
-		t.Errorf("serve applied %d migrations, want 1; stderr:\n%s", n, stderr)
+	// Each embedded migration is applied once.
+	files, err := os.ReadDir(filepath.Join("..", "..", "internal", "store", "migrations"))
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	if n := strings.Count(stderr, `msg="migration applied"`); n != len(files) {
+		t.Errorf("serve applied %d migrations, want %d; stderr:\n%s", n, len(files), stderr)
 	}
 	assertMigrated(t, dbPath(cfg))
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -150,10 +151,13 @@ func TestDB_UpsertFinding_UpdatesOnlyDepVersionLink(t *testing.T) {
 	ctx := t.Context()
 	repoID, packageID, advisoryID := seedAdvisoryParents(t, db)
 	exec(t, db, `INSERT INTO manifests (id, repo_id, path, created_ts, updated_ts) VALUES (3, ?, 'go.mod', ?, ?)`, repoID, ts0, ts0)
-	exec(t, db, `INSERT INTO commits (id, repo_id, sha, created_ts, updated_ts) VALUES (4, ?, 'abc123', ?, ?)`, repoID, ts0, ts0)
-	for _, id := range []int64{5, 8} {
+	// Two intervals need two opening commits: an interval is unique by repo,
+	// manifest, package and opening commit.
+	for _, c := range []struct{ id, from int64 }{{5, 4}, {8, 6}} {
+		exec(t, db, `INSERT INTO commits (id, repo_id, sha, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?)`,
+			c.from, repoID, fmt.Sprintf("abc%d", c.from), ts0, ts0)
 		exec(t, db, `INSERT INTO dep_versions (id, repo_id, package_id, manifest_id, version, from_commit_id, created_ts, updated_ts)
-			VALUES (?, ?, ?, 3, 'v1.2.0', 4, ?, ?)`, id, repoID, packageID, ts0, ts0)
+			VALUES (?, ?, ?, 3, 'v1.2.0', ?, ?, ?)`, c.id, repoID, packageID, c.from, ts0, ts0)
 	}
 	const fp = "advisory|1|2|GO-2026-0001"
 	first, err := db.UpsertFinding(ctx, model.Finding{

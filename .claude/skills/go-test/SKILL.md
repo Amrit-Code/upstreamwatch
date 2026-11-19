@@ -73,7 +73,7 @@ For rendered output (digest text, HTML pages, prompt payloads, CLI tables), comp
 
 ### Fixture git repositories
 
-Timeline and `gitsrc` tests run against a repository built in `t.TempDir()` by `internal/testutil/gitfixture`. The helper:
+Timeline and `gitsrc` tests run against a repository built in `t.TempDir()` by `internal/testutil/gitrepo` (built in M1; its doc comments are the API reference, and `templates/fixture-git-repo.md` shows the original design, whose names differ: `gitrepo.New(t, branch)` and `Repo.Commit(msg, at)` are the real ones, and `gitsrc.Options` takes `ReposDir`, `HomeDir` and `AllowFileURLs: true` for fixtures). The helper:
 
 - fixes author, committer and dates per commit;
 - runs `git` with an explicit environment, so no user or system git config, hooks or signing leak in;
@@ -83,7 +83,7 @@ Timeline and `gitsrc` tests run against a repository built in `t.TempDir()` by `
 With those fixed, commit SHAs come out the same on every machine and can appear in golden files.
 
 ```go
-r := gitfixture.New(t)
+r := gitrepo.New(t, "main")
 r.Write("go.mod", "module example.com/app\n\ngo 1.27\n\nrequire github.com/example/lib v1.2.0\n")
 base := r.Commit("add lib", day(1))
 ```

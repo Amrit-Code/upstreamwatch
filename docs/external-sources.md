@@ -8,7 +8,7 @@ All calls go out from the binary. Nothing calls in. Failures never fail silently
 
 | Source | What we take | How | Auth | How often | Behind interface | If it fails |
 |---|---|---|---|---|---|---|
-| Target git remotes | Commit history and manifest file contents | `git` over https, bare clone | Read-only token for private repos, sent as a header, never stored | 6 h | `GitSource` | job_failure finding; timeline stays at last good commit |
+| Target git remotes | Commit history and manifest file contents | `git` over https: `git init --bare`, then a fetch of the indexed branch only, no tags | Read-only token for private repos, sent as a header, never stored | 6 h | `GitSource` | job_failure finding; timeline stays at last good commit |
 | OSV API | Advisories for each package version | `POST /v1/querybatch`, `GET /v1/vulns/{id}` | None | 6 h | `AdvisorySource` | Keep stored advisories; retry next run |
 | OSV bucket | Which advisories changed since last look | `modified_id.csv` per ecosystem | None | Daily | `AdvisorySource` | Fall back to querybatch |
 | CISA KEV | Known-exploited flag per CVE | JSON download | None | Daily | `ExploitSignals` | Ranking uses yesterday's flags |
@@ -33,8 +33,20 @@ Every HTTP adapter sends its requests through `internal/httpx` (the email notifi
 - A connection is refused, after the hostname is resolved, when the address is loopback, private, link-local, multicast or unspecified, or lies in the shared address space `100.64.0.0/10` (where tailnet addresses live), "this network" `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`, the IPv4 and IPv6 documentation ranges, local-use NAT64 `64:ff9b:1::/48`, Teredo `2001::/32` or deprecated site-local `fec0::/10`. For NAT64 `64:ff9b::/96`, 6to4 `2002::/16` and IPv4-compatible `::/96` addresses the embedded IPv4 address is judged by the same rules.
 - A host the operator names in the client's `AllowPrivateHosts` option is exempt from the address check and may use `http`. Nothing in production code sets it; tests use it to reach a local fake server.
 - Defaults: a two-minute timeout per request, a 64 MiB response body cap, three attempts for a GET or HEAD, a 30-second longest wait between attempts, and a 100 ms gap between requests to `api.github.com`. Other methods are sent once. A server asking for a longer wait than the maximum (`Retry-After` or the rate-limit reset header) ends the request with a rate-limit error that carries the reset time.
+- `httpx.BlockedAddr` exposes the same address check. `internal/gitsrc` applies it to git remotes, because `git` dials for itself and this client never sees those connections (see the next section).
 - Errors name the method, host and path, never the query string; a request marked `SecretPath` (webhooks) names the host only.
 - Conditional requests use `ETag` and `Last-Modified`. The client either keeps them itself in the `http_cache` table, keyed by exact URL, or leaves them to the caller, which passes the ETag in and stores the one that comes back. A 304 counts as an answer to a conditional request only when the request that got it, after redirects, carried a validator.
+
+## Git remotes and their policy
+
+`internal/gitsrc` runs the `git` binary for every clone and fetch. It does not use `internal/httpx`, so it applies its own checks before each network operation:
+
+- Only `https` URLs, with a host and no userinfo. A URL starting with `-`, an `scp`-style address, a local path and `<transport>::` remote-helper syntax are refused. Only tests allow `file://` URLs.
+- The host is resolved and the connection refused when any address is one `httpx.BlockedAddr` refuses (the ranges listed above); git is then pinned to the address that was checked. A target marked `AllowPrivateHost` is exempt from the address check; the URL must still be https. The config key that sets it, `targets[].allow_private_hosts`, is recorded in [decisions.md](decisions.md) and is not in the config loader yet.
+- The first sync creates the clone with `git init --bare` and fetches only the indexed branch, with no tags. The fetch lands on a staging ref, which is moved onto the branch only after it succeeded and the clone is within the size cap. Every fetch passes the URL on the command line, so no remote URL is stored in the clone's config and a URL change in config takes effect on the next fetch. A failed first sync leaves no clone behind.
+- The token is sent as an `Authorization` header scoped to the target's host, through environment config only: never on the command line, in the URL or in a file. Error text is scrubbed of it.
+- git runs with an explicit argument list, a minimal environment and an empty home directory, and with every protocol but https, credential helpers, redirects, submodules and hooks refused.
+- Limits, as the defaults of `gitsrc.Options`: a clone directory over 2048 MiB stops the fetch and fails the sync; a first sync has 30 minutes and a later fetch or `ls-remote` 10 minutes; `ReadBlobs` skips a blob over 5 MiB (it comes back as `TooLarge`). None of these has a config key yet.
 
 ## What `upw doctor` probes
 
@@ -58,10 +70,11 @@ The private side and the public side use different tokens:
 
 Libraries are not on the table above because they run inside the binary:
 
-- `git-pkgs/manifests`, `git-pkgs/vers`, `git-pkgs/purl` and `git-pkgs/vulns/osv`
+- `git-pkgs/manifests`, `git-pkgs/vers`, `git-pkgs/purl` and `git-pkgs/vulns/osv`. `manifests` is pinned at v0.14.0 and parses the Python files and GitHub Actions workflows; `purl` is pinned at v0.2.1 (see [decisions.md](decisions.md))
+- `golang.org/x/mod/modfile` (v0.43.0), for `go.mod`: the `manifests` library ignores `replace` directives and the `go` and `toolchain` lines (see [decisions.md](decisions.md))
 - `modernc.org/sqlite`
 - `robfig/cron/v3`
-- `go.yaml.in/yaml/v3`, for the config file; approved by the owner on 2026-11-19 (see [decisions.md](decisions.md))
+- `go.yaml.in/yaml/v3`, for the config file and, in `internal/extract`, for compose files; approved by the owner on 2026-11-19 (see [decisions.md](decisions.md))
 - the Anthropic SDK
 
 The CLI uses the standard library `flag` package. Anything beyond the libraries named in [the plan](../mvp-plan/PLAN.md) needs the owner's approval. There are no test frameworks; tests use hand-written fakes.

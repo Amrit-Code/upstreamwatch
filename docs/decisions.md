@@ -43,7 +43,7 @@ Rulings the lead session made while building M0, in the work orders under `.clau
 
 Rulings the lead session made while planning M1, in the work orders under `.claude/plans/m1/`.
 
-- First sync creates the clone with `git init --bare` and fetches only the indexed branch (`+refs/heads/<b>:refs/heads/<b>`, no tags), instead of `git clone --bare`. Every fetch passes the URL explicitly, so no remote URL is stored in the clone's config and a URL change in config takes effect on the next fetch.
+- First sync creates the clone with `git init --bare` and fetches only the indexed branch (no tags), instead of `git clone --bare`. Every fetch lands in a staging ref (`+refs/heads/<b>:refs/upw/staging/<b>`), and `refs/heads/<b>` moves with `git update-ref` only after the size cap check passes, so a rejected fetch never moves the indexed branch. Every fetch passes the URL explicitly, so no remote URL is stored in the clone's config and a URL change in config takes effect on the next fetch.
 - `go.mod` is parsed with `golang.org/x/mod/modfile`, not the `manifests` library, because the library (v0.14.0) ignores `replace` directives and the `go` and `toolchain` lines. Dockerfiles and compose files are parsed by upstreamwatch's own code, because the library reports build-stage names (`FROM builder`) as images and drops the tag of an image pinned by digest. The library is used for every other format.
 - The manifest event diff compares version and requirement. A change of only the direct flag or scope emits no event.
 - `uv.lock` and `poetry.lock` cannot tell direct from transitive dependencies, so their entries are stored with `direct` NULL; the matching manifest (pyproject.toml) records the same packages as direct with their requirement. Unity's `Packages/packages-lock.json` records each package's `depth`, so its entries are direct at depth 0 and transitive above it (NULL only when `depth` is absent).
@@ -98,6 +98,8 @@ Nothing here changes scope, milestones or the stack. Every non-goal in the plan 
 - The git token is passed through per-invocation environment config (`GIT_CONFIG_COUNT` and friends), not `-c http.extraHeader=...` as PLAN.md 5.1 has it, because command-line arguments are readable by other processes on the machine.
 - Verdict reuse when the configured model changes: scheduled runs reuse an existing verdict for the same issue, body, package, version, usage, prompt version and snippet mode even if the model differs; only `upw llm rejudge` and `upw eval run` match on the model too. This resolves PLAN.md 5.8 saying both that the cache key includes the model and that re-judging on a model change is opt-in.
 - The layering lint (`go-arch-lint`) cannot see standard-library imports, so `make check` also runs a `go list` based check that only `internal/store` imports `database/sql` and only `internal/gitsrc` imports `os/exec`. The lint tool is run with `go run <module>@<version>` so it does not enter `go.mod`.
+
+- PLAN.md 5.2 lists `go.sum` among the manifest pathspecs, but its resolution table says `go.sum` is ignored because it lists modules outside the build. The table wins: `go.sum` is not walked or parsed (decided 2026-11-19 while syncing the docs after M1 wave 1).
 
 ## Open
 

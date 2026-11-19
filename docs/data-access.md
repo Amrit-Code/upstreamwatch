@@ -65,21 +65,25 @@ The `schema_migrations` table is owned by `store.DB` itself and has no interface
 
 ### What is built
 
-The table above is the design. After M0 these methods exist on `store.DB`:
+The table above is the design. So far these methods exist on `store.DB`:
 
 | Interface | Methods on `store.DB` | Table |
 |---|---|---|
+| `RepoStore` | `UpsertRepo`, `RecordFetch`, `GetRepo`, `ListRepos` | repos |
+| `TimelineStore` | `ListEvents`, `ListIntervals`, `ApplyTimeline` | commits, manifests, packages, dep_events, dep_versions (and `repos.last_indexed_sha`) |
 | `RunStore` | `StartRun`, `FinishRun`, `LatestRuns` | runs |
 | `FindingStore` | `UpsertFinding`, `ResolveFinding`, `ListOpenFindings` | findings, finding_state |
 | `CacheStore` (http half) | `GetHTTPValidator`, `SaveHTTPValidator` | http_cache |
 
 `store.DB` also has `Open`, `Close`, `Migrate` and `InTx`. `Backup` and `Export` and the other interfaces come with the milestones that need them. The `kv` half of `CacheStore` is still to come, in M2.
 
-Each interface a service uses is declared in that service's package, so the sets differ by consumer: `pipeline.RunStore` (`StartRun`, `FinishRun`) and `pipeline.FindingStore` (`UpsertFinding`, `ResolveFinding`), `query.RunStore` (`LatestRuns`) and `query.FindingStore` (`ListOpenFindings`), and `httpx.CacheStore` (`GetHTTPValidator`, `SaveHTTPValidator`). `*store.DB` satisfies all of them. `UpsertFinding` inserts a finding in state `open` together with its `finding_state` row, in one transaction; for a fingerprint that exists it updates score, rank reason and last-changed time, clears `resolved_ts` and leaves the operator state alone. `ListOpenFindings` returns unresolved findings in state `open` or `acked`, highest score first.
+`ApplyTimeline` writes one timeline run for one repo in one `InTx` transaction. It appends the new commits, upserts manifests and packages, inserts the events, replaces the repo's intervals while keeping the row ID of every interval whose manifest, package and opening commit are unchanged, and sets `repos.last_indexed_sha`. With `Reset` set it first deletes the repo's commits, events and intervals, for a branch whose history was rewritten.
+
+Each interface a service uses is declared in that service's package, so the sets differ by consumer: `pipeline.RunStore` (`StartRun`, `FinishRun`) and `pipeline.FindingStore` (`UpsertFinding`, `ResolveFinding`), `query.RunStore` (`LatestRuns`) and `query.FindingStore` (`ListOpenFindings`), `httpx.CacheStore` (`GetHTTPValidator`, `SaveHTTPValidator`), `ingest.RepoStore` (`UpsertRepo`, `RecordFetch`), `timeline.RepoStore` (`GetRepo`), `timeline.TimelineStore` (`ListEvents`, `ApplyTimeline`) and `query.TimelineStore` (`GetRepo`, `ListRepos`, `ListIntervals`). `*store.DB` satisfies all of them. `UpsertFinding` inserts a finding in state `open` together with its `finding_state` row, in one transaction; for a fingerprint that exists it updates score, rank reason and last-changed time, clears `resolved_ts` and leaves the operator state alone. `ListOpenFindings` returns unresolved findings in state `open` or `acked`, highest score first.
 
 ## Rules
 
-- Writes that must land together, such as the issues page and its cursor, go through `store.DB.InTx`, which hands the service the same interfaces bound to a transaction. `InTx` opens an `IMMEDIATE` write transaction, commits when the function returns nil and rolls back on an error or panic; called inside a transaction it joins it. `store.Bind` adapts `InTx` to a consumer-declared interface, so a service can run its own interface in a transaction without importing the store.
+- Writes that must land together, such as the issues page and its cursor, or a timeline run's commits, events and intervals, go through `store.DB.InTx`, which hands the service the same interfaces bound to a transaction. `InTx` opens an `IMMEDIATE` write transaction, commits when the function returns nil and rolls back on an error or panic; called inside a transaction it joins it. `store.Bind` adapts `InTx` to a consumer-declared interface, so a service can run its own interface in a transaction without importing the store.
 - `store.Open` sets WAL, a five-second busy timeout and foreign keys on, and refuses to continue if the pragmas did not take. It creates the database file with mode 0600 and a missing directory with mode 0700; an existing data directory that group or others can access is set to 0700, and `Open` fails if it cannot be.
 - The scheduler is the single writer for pipeline tables. The web server writes only finding state, eval labels and settings. SQLite runs in WAL mode so page loads never wait on a job.
 - Store methods take and return domain objects (see [domain-model.md](domain-model.md)), never rows or `sql.Null*` types.

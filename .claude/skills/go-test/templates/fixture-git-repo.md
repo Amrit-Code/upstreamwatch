@@ -1,3 +1,5 @@
+> Built in M1 as `internal/testutil/gitrepo` with a different API; read that package's doc comments. The code below is the original design and is kept for its reasoning, not to copy. `gitsrc.Options` has `ReposDir`, `HomeDir` and `AllowFileURLs`, not `DataDir`.
+
 # Template: fixture git repositories
 
 Use this when a test needs a real git history: the `gitsrc` adapter, or end-to-end timeline tests. Service tests for `timeline` use a fake `GitSource` instead.

@@ -101,6 +101,7 @@ flowchart TB
   RUN -- "runs table" --> ST
   GIT --> GB
   VUL & UPS & ISS & LLM & NOT --> HX
+  GIT -- "address policy" --> HX
   HX -- "http_cache" --> ST
   HX --> NET
   ST --> SQL
@@ -120,7 +121,7 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 | `internal/sched` | 1 Entry | Cron ticks; hands job names to `pipeline.Runner`. |
 | `internal/web` | 1 Entry | HTTP handlers and templates; no logic. |
 | `internal/pipeline` | 2 Service | `Runner` and the `Job` interface: runs one job, records the run, raises `job_failure`. |
-| `internal/ingest` | 2 Service (job) | Target repo registration and the URL and host policy. |
+| `internal/ingest` | 2 Service (job) | Target repo registration: stores each configured target, syncs it through `GitSource` and records the fetch attempt in `repos`. The URL and host policy is applied by `internal/gitsrc`. |
 | `internal/timeline` | 2 Service (job) | Manifest history into dependency events and intervals. |
 | `internal/usage` | 2 Service (job) | The symbol-usage index. Adapters are the two packages below. |
 | `internal/usage/golang` | 4 Adapter | `UsageIndexer` for Go source, using `go/parser`. |
@@ -137,20 +138,20 @@ Every package under `internal/`, plus `cmd/upw`. The layer numbers are those of 
 | `internal/eval` | 2 Service | Eval labels, runs and reports. It declares its own small interface for "judge this candidate", which `triage.Service` satisfies; `cmd/upw` wires them. It imports `model` only and never calls a provider. |
 | `internal/query` | 2 Service | The read services behind the web pages and the read-only CLI commands: timeline, coverage, finding detail, eval report. Imports `model` and declares the store interfaces it needs. |
 | `internal/model` | 3 Domain | Shared objects and their pure rules, plus `Scope` and `Stats`. See [domain-model.md](domain-model.md). |
-| `internal/gitsrc` | 4 Adapter | `GitSource` over the `git` binary; the only `os/exec` user. |
-| `internal/extract` | 4 Adapter | `Extractor` implementations (manifests library, Unity). |
+| `internal/gitsrc` | 4 Adapter | `GitSource` over the `git` binary; the only `os/exec` user. Owns the URL and host policy for git remotes (https only, no userinfo, resolved addresses checked with `httpx.BlockedAddr`) and the clone size cap. |
+| `internal/extract`, `internal/extract/unity` | 4 Adapter | `Extractor` implementations: `extract` (`go.mod`, Dockerfile, compose, and the other formats through the manifests library) and `unity` (the Unity project files). Both do no I/O. |
 | `internal/llm` | Pure helper, beside 4 | Provider-neutral prompt builder, vocabulary constants, output schema and cost helpers. No I/O; imports `model` only. `triage` and the two adapters below may import it. |
 | `internal/llm/anthropic` | 4 Adapter | `Provider` using the Anthropic SDK. May import `llm`, `httpx` and `model`. Built with a `KeySource`. |
 | `internal/llm/openaicompat` | 4 Adapter | `Provider` for OpenAI-compatible chat endpoints (config value `openai_compat`). May import `llm`, `httpx` and `model`. Built with a `KeySource`. |
 | `internal/notify/email`, `discord`, `slack`, `ntfy`, `stdout` | 4 Adapter | One `Notifier` each. |
-| `internal/httpx` | between 4 and 5 | Shared HTTP client: ETags, rate limits, retries, URL policy. |
+| `internal/httpx` | between 4 and 5 | Shared HTTP client: ETags, rate limits, retries, URL policy. Also exports `BlockedAddr`, the address check `gitsrc` applies to git remotes. |
 | `internal/store` | 5 Store | `store.DB`, the migrations, transactions; the only `database/sql` user. |
 | `internal/config` | not drawn | Config loading, defaults and validation (a file with a second YAML document that has content is rejected; empty or null later documents are ignored); only `cmd/upw` imports it. Default listen address `127.0.0.1:8080`; the container config sets `0.0.0.0:8080`. |
-| `internal/testutil` | not drawn | Test helpers such as the fixture git repo builder; no production package imports it. |
+| `internal/testutil` | not drawn | Test helpers such as the fixture git repo builder (`internal/testutil/gitrepo`); no production package imports it. |
 
 Every interface is declared in the package that uses it, so `Provider` is in `internal/triage`, not in `internal/llm`, and eval's "judge this candidate" interface is in `internal/eval`.
 
-After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last four hold only `New` and `Check` (the doctor probe). The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
+After M0 these packages exist: `cmd/upw`, `internal/config`, `internal/model`, `internal/store`, `internal/httpx`, `internal/pipeline`, `internal/sched`, `internal/web`, `internal/query`, `internal/gitsrc`, `internal/vuln/osv`, `internal/upstream/depsdev` and `internal/issues/github`. The last three hold only `New` and `Check` (the doctor probe). M1 adds `internal/ingest`, `internal/timeline`, `internal/extract`, `internal/extract/unity` and `internal/testutil/gitrepo`, and `internal/gitsrc` gains the `GitSource` methods. The ingest and timeline jobs are built but `cmd/upw` does not register them with the Runner yet. The other rows above are planned for later milestones. `Runner` runs one job at a time: a second call waits for the first to end.
 
 ## What each job does
 
@@ -158,7 +159,7 @@ Each row is one job: the service that implements it, the pure decisions it makes
 
 | Job | Service object | Decisions (pure) | Calls out through | Writes tables |
 |---|---|---|---|---|
-| ingest | `ingest.Service` | URL and host policy | `GitSource` | repos |
+| ingest | `ingest.Service` | none (the URL and host policy is applied inside `GitSource`) | `GitSource` | repos |
 | timeline | `timeline.Service` | diff manifest states into events; fold events into intervals | `GitSource`, `Extractor` | commits, manifests, packages, dep_events, dep_versions |
 | usage | `usage.Service` | none | `GitSource`, `UsageIndexer` | symbol_usage |
 | vulns | `vuln.Service` | version in range; exposure window; confidence label | `AdvisorySource`, `ExploitSignals` | advisories, advisory_affected, advisory_matches, findings |
@@ -291,4 +292,4 @@ sequenceDiagram
   R->>S: RunStore.Finish
 ```
 
-A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly. A job that panics is recorded the same way, with an error starting `panic: `. A run whose context was cancelled or past its deadline when the job returned is recorded as failed even if the job returned no error; the error is the context's. There is one job_failure finding per job, with fingerprint `job_failure|<job>`; a repeat failure refreshes it, and the next successful run of that job resolves it.
+A failed job is caught by the Runner, written to the runs table and raised as a job_failure finding, so it shows up in the next digest instead of failing quietly. The error text passes through `model.Redact` before it is stored in `runs.error`, in the finding's rank reason and in the log, so a credential an outside tool echoed does not reach `/health` or the findings page; `errors.Is` and `errors.As` still see the original error. A job that panics is recorded the same way, with an error starting `panic: `. A run whose context was cancelled or past its deadline when the job returned is recorded as failed even if the job returned no error; the error is the context's. There is one job_failure finding per job, with fingerprint `job_failure|<job>`; a repeat failure refreshes it, and the next successful run of that job resolves it.

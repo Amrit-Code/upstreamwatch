@@ -10,7 +10,7 @@ Each interface is declared in the package that uses it, which is the Go conventi
 classDiagram
   direction LR
   class Job { <<interface>> Name() Run() }
-  class GitSource { <<interface>> Sync() ManifestCommits() ReadBlobs() ListFiles() }
+  class GitSource { <<interface>> Sync() Head() IsAncestor() ManifestCommits() ReadBlobs() ListFiles() }
   class Extractor { <<interface>> Patterns() Parse() }
   class UsageIndexer { <<interface>> Languages() Index() }
   class AdvisorySource { <<interface>> QueryBatch() Fetch() ModifiedSince() }
@@ -57,7 +57,8 @@ Ten interfaces to the outside, plus `Checker`, which every outbound adapter also
 Types named here are the domain objects described in [domain-model.md](domain-model.md).
 
 ```go
-// Signatures as designed. Types named here are the domain objects in domain-model.md.
+// Signatures as designed, except GitSource and Extractor, which are as built in M1
+// (ListFiles is still as designed). Types named here are the domain objects in domain-model.md.
 
 type Job interface {
     Name() string
@@ -65,15 +66,17 @@ type Job interface {
 }
 
 type GitSource interface {
-    Sync(ctx context.Context, repo TargetRepo) (head string, err error)             // clone or fetch, bare
-    ManifestCommits(ctx context.Context, repo TargetRepo, after string, paths []string) ([]Commit, error)
+    Sync(ctx context.Context, repo TargetRepo) (SyncResult, error)                  // clone or fetch, bare
+    Head(ctx context.Context, repo TargetRepo) (string, error)                      // what the indexed branch points at in the clone
+    IsAncestor(ctx context.Context, repo TargetRepo, ancestor, commit string) (bool, error)
+    ManifestCommits(ctx context.Context, repo TargetRepo, from, to string, patterns []string) ([]Commit, error)
     ReadBlobs(ctx context.Context, repo TargetRepo, refs []BlobRef) ([]Blob, error) // one cat-file --batch
-    ListFiles(ctx context.Context, repo TargetRepo, sha string, globs []string) ([]string, error)
+    ListFiles(ctx context.Context, repo TargetRepo, sha string, globs []string) ([]string, error) // not built yet
 }
 
 type Extractor interface {
-    Patterns() []string                                          // manifest path globs it understands
-    Parse(path string, content []byte) ([]Dependency, error)
+    Patterns() []string                                          // manifest path globs it understands, in git pathspec syntax
+    Parse(path string, content []byte) (ParsedManifest, error)   // ErrUnsupportedFile (wrapped) for a path it does not handle
 }
 
 type UsageIndexer interface {
@@ -129,7 +132,9 @@ type Checker interface {
 }
 ```
 
-Of the signatures above, `Job` is declared in `internal/pipeline` and takes `model.Scope` and returns `model.Stats`: `Run(ctx context.Context, scope model.Scope) (model.Stats, error)`. The adapters built in M0 hold only `New` and `Check`; their interface methods arrive with the milestones that use them (see Implementations).
+Of the signatures above, `Job` is declared in `internal/pipeline` and takes `model.Scope` and returns `model.Stats`: `Run(ctx context.Context, scope model.Scope) (model.Stats, error)`. The `osv`, `depsdev` and `github` adapters hold only `New` and `Check`; their interface methods arrive with the milestones that use them (see Implementations).
+
+`GitSource` is declared twice, each time with only the methods its consumer calls: `ingest.GitSource` has `Sync`, and `timeline.GitSource` has `Head`, `IsAncestor`, `ManifestCommits` and `ReadBlobs`. `gitsrc.CLI` implements all five; `ListFiles` is not built yet. `Sync` returns a `model.SyncResult` (branch, head, clone path, whether it cloned). `ManifestCommits` returns the first-parent commits after `from` (empty means from the root) up to `to` that changed a path matching one of the patterns, oldest first, each with the matching paths it changed, deletions included. `Extractor` is declared in `internal/timeline`; its `Parse` returns a `model.ParsedManifest` (ecosystem, kind and dependencies).
 
 The LLM key has one seam. `cmd/upw` builds the `KeySource`: the `UPW_LLM_API_KEY` variable if set, otherwise `settings.Service`, which is the only code that encrypts and decrypts the stored key. Because the adapter calls it on every `Judge` and `Check`, a key saved in the web UI works without a restart. `triage` does not use `SettingsStore` and never sees the key; only `settings.Service` does, and the store holds ciphertext only.
 
@@ -139,9 +144,9 @@ The LLM key has one seam. `cmd/upw` builds the `KeySource`: the `UPW_LLM_API_KEY
 
 | Interface | Implementations | Notes |
 |---|---|---|
-| `Job` | `ingest.Service`, `timeline.Service`, `vuln.Service`, `issues.Poller`, `triage.Service`, `report.Service` | `usage.Service`, `upstream.Service`, `prefilter.Service` and `ops.Backup` are also jobs; the diagram shows the main ones. See the job table in [architecture.md](architecture.md). |
-| `GitSource` | `gitsrc` (shells out to the `git` binary) | Bare clones only. `gitsrc.CLI` has only `New` and `Check` so far (`git --version`); the interface methods come with M1. |
-| `Extractor` | `manifests` library adapter, Unity extractor | The Unity extractor reads `Packages/manifest.json`, `Packages/packages-lock.json` and `ProjectSettings/ProjectVersion.txt`. |
+| `Job` | `ingest.Service` and `timeline.Service` (built, not yet registered with the Runner), `vuln.Service`, `issues.Poller`, `triage.Service`, `report.Service` | `usage.Service`, `upstream.Service`, `prefilter.Service` and `ops.Backup` are also jobs; the diagram shows the main ones. See the job table in [architecture.md](architecture.md). |
+| `GitSource` | `gitsrc.CLI` (shells out to the `git` binary) | Bare clones only. `gitsrc.CLI` has `Sync`, `Head`, `IsAncestor`, `ManifestCommits`, `ReadBlobs` and `Check` (`git --version`); `ListFiles` comes with the usage index. `Sync` applies the URL and host policy, see [external-sources.md](external-sources.md). |
+| `Extractor` | `extract.Extractor` (`internal/extract`), `unity.Extractor` (`internal/extract/unity`) | `extract.Extractor` reads `go.mod` (with `golang.org/x/mod/modfile`), Dockerfiles and compose files (its own parsers) and the other formats through the `manifests` library. The Unity extractor reads `Packages/manifest.json`, `Packages/packages-lock.json` and `ProjectSettings/ProjectVersion.txt`. The timeline offers the Unity extractor first, for targets that enable it, then the others in order; the first that does not report `ErrUnsupportedFile` handles the file. |
 | `UsageIndexer` | Go indexer (`go/parser`), Python indexer (import scan) | No type-checking in the MVP. |
 | `AdvisorySource` | OSV client | API for per-version queries, bucket for daily deltas. `osv.Client` (`internal/vuln/osv`) has only `New` and `Check` so far. |
 | `ExploitSignals` | CISA KEV feed, EPSS feed | Both keyed by CVE alias. |

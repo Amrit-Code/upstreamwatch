@@ -2,7 +2,7 @@
 
 This document shows the SQLite schema: three entity-relationship diagrams, every table with its columns, and which tables can be rebuilt from outside sources. The schema comes from section 4 of [the plan](../mvp-plan/PLAN.md) plus four accepted additions: `llm_verdicts.request_payload`, `llm_verdicts.evidence_verified`, the `digests` table (with its `error` column) and the `settings` table. Which interface reads and writes each table is in [data-access.md](data-access.md).
 
-The whole schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md).
+The initial schema, every table below and the `dep_state` view, is created by one migration, `internal/store/migrations/0001_initial_schema.sql`. The reason is in [decisions.md](decisions.md). `0002_timeline.sql` then adds `dep_versions.requirement`, recreates the `dep_state` view to carry it, and adds two indexes: `dep_versions_identity` and `commits_repo_position`.
 
 Conventions: names are snake_case, primary keys are integers unless noted, and timestamp columns end in `_ts` and hold ISO-8601 UTC text (RFC 3339, second precision, `Z` suffix). Every table has `created_ts` and `updated_ts`, set by the store, except `kv`, `http_cache` and `settings`, which have only `updated_ts`, and `schema_migrations`, which has neither. The two timestamps are left out of the listings below. The ER diagrams show only keys and the columns that carry meaning.
 
@@ -66,6 +66,7 @@ erDiagram
     int package_id FK
     int manifest_id FK
     text version
+    text requirement
     int from_commit_id FK
     text from_ts
     text to_ts "null means still pinned"
@@ -281,11 +282,11 @@ erDiagram
 | id | |
 | slug | unique; from config, for example `my-server` |
 | url | |
-| default_branch | |
-| clone_path | |
-| last_indexed_sha | |
-| last_fetch_ts | |
-| last_fetch_error | |
+| default_branch | the branch indexed; set by a successful fetch |
+| clone_path | the bare clone's directory; set by a successful fetch |
+| last_indexed_sha | the branch commit the timeline was last built to; set by the timeline job |
+| last_fetch_ts | the last fetch attempt, successful or not |
+| last_fetch_error | the last attempt's error text; NULL when it succeeded |
 
 **commits** holds only first-parent commits that touched manifests. Unique on (repo_id, sha).
 
@@ -294,7 +295,7 @@ erDiagram
 | id | |
 | repo_id | |
 | sha | |
-| position | 0 is the root, increasing toward HEAD |
+| position | 0 is the root, increasing toward HEAD; indexed together with repo_id (`commits_repo_position`) |
 | committed_ts | committer date of the first-parent commit |
 | author_name | |
 | author_email | |
@@ -339,7 +340,7 @@ erDiagram
 | direct | 1 direct, 0 transitive, NULL unknown |
 | scope | `runtime`, `development`, `build` and so on |
 
-**dep_versions** holds materialised intervals, rebuilt from `dep_events` per repo. A (repo, package) pair may have several open intervals when two manifests pin different versions.
+**dep_versions** holds materialised intervals, rebuilt from `dep_events` per repo. A (repo, package) pair may have several open intervals when two manifests pin different versions. An interval is identified by (repo_id, manifest_id, package_id, from_commit_id), enforced by the unique index `dep_versions_identity`. A timeline run keeps the row ID of every interval whose identity is unchanged and updates its other columns in place, so advisory matches and findings keep pointing at it; it deletes intervals whose identity is gone and inserts new ones.
 
 | Column | Notes |
 |---|---|
@@ -348,6 +349,7 @@ erDiagram
 | package_id | |
 | manifest_id | |
 | version | |
+| requirement | raw constraint as written, so an interval from a manifest that gives only a constraint still shows what was declared |
 | direct | |
 | from_commit_id | |
 | from_ts | |
@@ -619,7 +621,7 @@ In the two tables below, `upstream_created_ts` and `upstream_updated_ts` are the
 - `runs.status` is one of `running`, `succeeded`, `failed`. `findings.kind` is one of `advisory`, `issue`, `job_failure`. `finding_state.state` is one of `open`, `acked`, `snoozed`, `dismissed`. All three are `CHECK` constraints.
 - `runs.stats` is always a JSON object (`{}` when empty) and `runs.error` is the empty string when there is no failure; both are `NOT NULL`. `findings.score`, `rank_reason`, `first_seen_ts` and `last_changed_ts` are `NOT NULL`.
 - A new `finding_state` row leaves `changed_ts` and `changed_by` NULL.
-- Foreign keys are on. Deleting a `dep_versions` row, which a reindex does, deletes its `advisory_matches` and `issue_candidates` rows (`ON DELETE CASCADE`) and sets `findings.dep_version_id` to NULL (`ON DELETE SET NULL`). Every other foreign key is `NO ACTION`, so a parent row cannot be deleted while children point at it, and a finding of kind `advisory` or `issue` cannot be written until the rows it names exist.
+- Foreign keys are on. Deleting a `dep_versions` row, which a timeline run does to an interval whose identity has gone and to every interval of a repo it rebuilds from the root, deletes its `advisory_matches` and `issue_candidates` rows (`ON DELETE CASCADE`) and sets `findings.dep_version_id` to NULL (`ON DELETE SET NULL`). Every other foreign key is `NO ACTION`, so a parent row cannot be deleted while children point at it, and a finding of kind `advisory` or `issue` cannot be written until the rows it names exist.
 
 ## Reconstructible or not
 

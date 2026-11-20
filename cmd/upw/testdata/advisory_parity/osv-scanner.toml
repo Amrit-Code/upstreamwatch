@@ -1,0 +1,4 @@
+# osv-scanner configuration for TestAdvisoryParity. By default osv-scanner
+# does not scan the Go version in go.mod; upstreamwatch matches it as
+# pkg:golang/toolchain, so the referee must scan it too.
+ScanGoModVersion = true

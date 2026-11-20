@@ -30,7 +30,7 @@ check:
 # git pkgs history. It needs the network and git-pkgs on PATH, so check leaves
 # it out.
 e2e:
-	go test -tags e2e -race -count=1 -run TestParity -v -timeout 20m ./cmd/upw/
+	go test -tags e2e -race -count=1 -run 'TestParity|TestAdvisoryParity' -v -timeout 20m ./cmd/upw/
 
 build:
 	go build -o bin/upw ./cmd/upw

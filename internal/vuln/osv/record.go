@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/httpx"
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -25,6 +26,15 @@ var purlTypes = []string{
 // ecosystemActions is the model.Package Ecosystem of a GitHub Action as the
 // timeline stores it; it differs from the package URL type.
 const ecosystemActions = "github-actions"
+
+const (
+	// recordMaxBytes caps the download of one OSV record.
+	recordMaxBytes = 2 << 20
+	// detailsMaxBytes caps an advisory's Details; a longer text is cut on a
+	// rune boundary and ends with detailsEllipsis.
+	detailsMaxBytes = 64 << 10
+	detailsEllipsis = "…"
+)
 
 // osvRecord is the part of an OSV record upstreamwatch reads.
 type osvRecord struct {
@@ -66,13 +76,15 @@ type osvAffected struct {
 
 // Fetch returns the full record for id, with its affected packages mapped to
 // upstreamwatch's package URLs and its severity derived. An unknown id is an
-// error wrapping model.ErrNotFound.
+// error wrapping model.ErrNotFound. A response over recordMaxBytes, or a
+// record whose id is not id, is an error.
 func (c *Client) Fetch(ctx context.Context, id string) (model.Advisory, error) {
 	host := hostOf(c.base)
 	resp, err := c.hc.Do(ctx, httpx.Request{
-		Method:     http.MethodGet,
-		URL:        c.base + "/v1/vulns/" + url.PathEscape(id),
-		Validators: httpx.ValidatorsNone,
+		Method:       http.MethodGet,
+		URL:          c.base + "/v1/vulns/" + url.PathEscape(id),
+		Validators:   httpx.ValidatorsNone,
+		MaxBodyBytes: recordMaxBytes,
 	})
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok && se.Status == http.StatusNotFound {
 		return model.Advisory{}, fmt.Errorf("osv: fetch %s: %s: %w", id, host, model.ErrNotFound)
@@ -84,10 +96,15 @@ func (c *Client) Fetch(ctx context.Context, id string) (model.Advisory, error) {
 	if err != nil {
 		return model.Advisory{}, fmt.Errorf("osv: fetch %s: %s: %w", id, host, err)
 	}
+	if a.ID != id {
+		// The served id is upstream text, so it stays out of the error.
+		return model.Advisory{}, fmt.Errorf("osv: fetch %s: %s: record id differs from the id requested", id, host)
+	}
 	return a, nil
 }
 
 // parseRecord converts an OSV record into an Advisory whose Raw is body.
+// Details longer than detailsMaxBytes is cut; Raw keeps the exact body.
 func parseRecord(body []byte) (model.Advisory, error) {
 	var r osvRecord
 	if err := json.Unmarshal(body, &r); err != nil {
@@ -100,7 +117,7 @@ func parseRecord(body []byte) (model.Advisory, error) {
 		ID:      r.ID,
 		Aliases: r.Aliases,
 		Summary: r.Summary,
-		Details: r.Details,
+		Details: capDetails(r.Details),
 		Raw:     body,
 	}
 	var err error
@@ -159,6 +176,20 @@ func parseRecord(body []byte) (model.Advisory, error) {
 		a.Affected = append(a.Affected, ap)
 	}
 	return a, nil
+}
+
+// capDetails returns s when it is at most detailsMaxBytes long, and
+// otherwise its longest prefix of whole runes within detailsMaxBytes
+// followed by detailsEllipsis.
+func capDetails(s string) string {
+	if len(s) <= detailsMaxBytes {
+		return s
+	}
+	cut := detailsMaxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + detailsEllipsis
 }
 
 // parseOptionalTime is parseTime, with an empty string meaning "not set".

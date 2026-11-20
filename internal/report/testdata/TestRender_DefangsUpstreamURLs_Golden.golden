@@ -1,0 +1,25 @@
+[
+  {
+    "finding_id": 2001,
+    "kind": "advisory",
+    "score": 80,
+    "tag": "[A]",
+    "headline": "high  GHSA-pppp-qqqq-rrrr  pkg:golang/example.com/lib 1.0.0  (repo: example-server)",
+    "lines": [
+      "Sign in at hxxps[://]phish.example/login or hxxp[://]x.example to fix Fixed in ftp[://]fix.example/1.0.1. KEV: no.",
+      "Exposed since 2026-03-01 (go.mod) — confidence high"
+    ],
+    "url": "https://upw.example.test/f/2001"
+  },
+  {
+    "finding_id": 2002,
+    "kind": "advisory",
+    "score": 40,
+    "tag": "[A]",
+    "headline": "unknown  GO-2026-0002  pkg:golang/example.com/other  (repo: example-tools)",
+    "lines": [
+      "See hxxps[://]evil.example/x and git+ssh[://]host.example/r. KEV: no."
+    ],
+    "url": "https://upw.example.test/f/2002"
+  }
+]

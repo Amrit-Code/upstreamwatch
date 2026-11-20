@@ -163,7 +163,7 @@ func twelveItemDigest() model.Digest {
 	}, model.DigestItem{
 		FindingID: 2, Kind: model.KindAdvisory, Tag: "[A]",
 		Headline: "critical  GHSA-xxxx  @everyone see [x](http://evil)",
-		Lines:    []string{"*bold* _it_ ~strike~ `code` |spoiler| > quote \\ back"},
+		Lines:    []string{"*bold* _it_ ~strike~ `code` |spoiler| > quote \\ back <@123456789012345678> <t:1700000000>"},
 		URL:      "https://upw.example.com/f/2",
 	})
 	for i := 3; i <= 8; i++ {
@@ -244,6 +244,9 @@ func TestDiscordSend_Golden(t *testing.T) {
 	if !strings.Contains(title, `\[x\](http://evil)`) {
 		t.Errorf("title %q: link markdown not neutralised", title)
 	}
+	if desc := m.Embeds[1].Description; !strings.Contains(desc, "\\<@\u200b123456789012345678\\> \\<t:1700000000\\>") {
+		t.Errorf("description %q: '<' markup not neutralised", desc)
+	}
 
 	l := logs.String()
 	if !strings.Contains(l, `msg="digest sent" channel=discord host=`+w.srv.Listener.Addr().String()+" items=12") {
@@ -275,7 +278,7 @@ func TestDiscordSend_Heartbeat(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("got %d requests, want 1", len(reqs))
 	}
-	want := `{"content":"upstreamwatch — 2026-11-18 — all quiet\nLast runs: ingest 07:05 ok.\nOpen: 3, acked: 0, snoozed: 0.  https://upw.example.com/"}`
+	want := `{"content":"upstreamwatch — 2026-11-18 — all quiet\nLast runs: ingest 07:05 ok.\nOpen: 3, acked: 0, snoozed: 0.  https://upw.example.com/","allowed_mentions":{"parse":[]}}`
 	if got := string(reqs[0].body); got != want {
 		t.Errorf("body = %s\nwant   %s", got, want)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -27,17 +28,18 @@ const pipelineLockFile = "pipeline.lock"
 // "upw serve". Jobs read what other jobs write (interval IDs, finding change
 // times), so even two different jobs must not overlap.
 type lockedJob struct {
-	job   pipeline.Job
-	dir   string
-	retry time.Duration
+	job    pipeline.Job
+	dir    string
+	retry  time.Duration
+	logger *slog.Logger
 }
 
 // withPipelineLock wraps each job so that it runs under the pipeline lock
-// file in dir.
-func withPipelineLock(dir string, jobs []pipeline.Job) []pipeline.Job {
+// file in dir. logger receives the line saying a job is waiting for the lock.
+func withPipelineLock(dir string, jobs []pipeline.Job, logger *slog.Logger) []pipeline.Job {
 	locked := make([]pipeline.Job, 0, len(jobs))
 	for _, j := range jobs {
-		locked = append(locked, &lockedJob{job: j, dir: dir, retry: jobLockRetry})
+		locked = append(locked, &lockedJob{job: j, dir: dir, retry: jobLockRetry, logger: logger})
 	}
 	return locked
 }
@@ -49,7 +51,7 @@ func (j *lockedJob) Name() string { return j.job.Name() }
 // ctx ends while it waits, it returns an error wrapping ctx.Err() without
 // running the job.
 func (j *lockedJob) Run(ctx context.Context, scope model.Scope) (stats model.Stats, err error) {
-	release, err := acquirePipelineLock(ctx, j.dir, j.retry)
+	release, err := acquirePipelineLock(ctx, j.dir, j.job.Name(), j.retry, j.logger)
 	if err != nil {
 		return nil, fmt.Errorf("job %s: %w", j.job.Name(), err)
 	}
@@ -59,13 +61,16 @@ func (j *lockedJob) Run(ctx context.Context, scope model.Scope) (stats model.Sta
 
 // acquirePipelineLock takes an exclusive flock on <dir>/pipeline.lock,
 // creating the directory (mode 0700) and the file (mode 0600) when missing.
-// A lock held elsewhere is retried every retry until ctx ends. The returned
-// function releases the lock by closing the file.
-func acquirePipelineLock(ctx context.Context, dir string, retry time.Duration) (func() error, error) {
+// A lock held elsewhere is retried every retry until ctx ends; before the
+// first wait, one Info line names job and the lock path, so a run queued
+// behind a long job does not look hung. The returned function releases the
+// lock by closing the file.
+func acquirePipelineLock(ctx context.Context, dir, job string, retry time.Duration, logger *slog.Logger) (func() error, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create job lock directory: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, pipelineLockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	path := filepath.Join(dir, pipelineLockFile)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open pipeline lock: %w", err)
 	}
@@ -76,6 +81,7 @@ func acquirePipelineLock(ctx context.Context, dir string, retry time.Duration) (
 		return nil
 	}
 
+	logged := false
 	for {
 		err := tryLock(f)
 		if err == nil {
@@ -83,6 +89,10 @@ func acquirePipelineLock(ctx context.Context, dir string, retry time.Duration) (
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
 			return nil, errors.Join(fmt.Errorf("take pipeline lock: %w", err), release())
+		}
+		if !logged && errors.Is(err, syscall.EWOULDBLOCK) {
+			logger.Info("waiting for pipeline lock", "job", job, "lock", path)
+			logged = true
 		}
 		// A blocking flock could not be interrupted by ctx, so the wait polls
 		// a non-blocking one instead.

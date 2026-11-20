@@ -24,17 +24,19 @@ var hostileTexts = []string{
 	"[click]\n(https://evil.example)",
 	"[click](<https://evil.example>)",
 	"@​everyone",
+	"<#123456789012345678>",
+	"<t:1700000000:R>",
 }
 
 const zeroWidthSpace = '​'
 
 // markdownSpecial are the characters the notifier must escape.
-const markdownSpecial = "\\*_~`|>[]"
+const markdownSpecial = "\\*_~`|><[]"
 
 // checkNeutralised fails the test unless s, as Discord would read it, can
-// form neither a mention nor a markdown link: every '@' is followed by a
-// zero-width space, and no '[' or ']' is left unescaped. It returns s with
-// the escapes removed, the text a reader sees.
+// form neither a mention, nor a markdown link, nor '<' markup: every '@' is
+// followed by a zero-width space, and no '[', ']' or '<' is left unescaped.
+// It returns s with the escapes removed, the text a reader sees.
 func checkNeutralised(t *testing.T, field, s string) string {
 	t.Helper()
 	runes := []rune(s)
@@ -65,10 +67,10 @@ func checkNeutralised(t *testing.T, field, s string) string {
 
 // TestDiscordSend_HostileTextCannotPingOrMaskLinks checks that upstream text
 // can neither ping anyone (every '@' is broken by a zero-width space, and
-// allowed_mentions is empty) nor form a masked markdown link (no unescaped
-// '[' or ']'). Bare URLs, which Discord auto-links with their real address,
-// and channel references such as <#123> are out of scope for M2 per the
-// lead's ruling on WO-14 and go to the security review.
+// allowed_mentions is empty), nor form a masked markdown link (no unescaped
+// '[' or ']'), nor open mention, channel or timestamp markup such as <#123>
+// (no unescaped '<'). Bare URLs, which Discord auto-links with their real
+// address, are defanged by the digest job before they reach the notifier.
 func TestDiscordSend_HostileTextCannotPingOrMaskLinks(t *testing.T) {
 	t.Parallel()
 	for _, hostile := range hostileTexts {

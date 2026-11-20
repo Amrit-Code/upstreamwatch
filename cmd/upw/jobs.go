@@ -73,7 +73,7 @@ func registeredJobs(cfg config.Config, db *store.DB, logger *slog.Logger) ([]pip
 			HeartbeatLastFire: heartbeatLastFire(cfg.Notify.Heartbeat, logger),
 		}, logger),
 		ops.NewBackup(db, ops.BackupOptions{Dir: filepath.Join(cfg.DataDir, "backups"), Keep: cfg.Retention.BackupsKeep}, logger),
-	}), nil
+	}, logger), nil
 }
 
 // heartbeatLastFire returns the digest job's heartbeat function: the most

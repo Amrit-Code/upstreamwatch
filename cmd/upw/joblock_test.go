@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -13,6 +16,27 @@ import (
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 	"github.com/Amrit-Code/upstreamwatch/internal/pipeline"
 )
+
+// quiet is the logger for tests that do not look at the lock's log line.
+var quiet = slog.New(slog.DiscardHandler)
+
+// logBuffer is a bytes.Buffer the logger may write from any goroutine.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // overlapRecorder counts the jobs inside Run at once and keeps the maximum.
 type overlapRecorder struct {
@@ -54,8 +78,8 @@ func TestJobLock_NoOverlap(t *testing.T) {
 			}
 			// Two Runners, as in two processes: each serialises only its own
 			// runs, so only the lock file keeps them apart.
-			r1 := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{newJob(1)})...)
-			r2 := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{newJob(2)})...)
+			r1 := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{newJob(1)}, quiet)...)
+			r2 := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{newJob(2)}, quiet)...)
 
 			errs := make(chan error, 2)
 			go func() { _, err := r1.Run(t.Context(), "ingest", model.Scope{}); errs <- err }()
@@ -106,7 +130,7 @@ func TestJobLock_NoOverlap(t *testing.T) {
 					time.Sleep(50 * time.Millisecond)
 					return nil, nil
 				}}
-				r := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{job})...)
+				r := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{job}, quiet)...)
 				for range runsEach {
 					wg.Go(func() {
 						if _, err := r.Run(t.Context(), "timeline", model.Scope{}); err != nil {
@@ -142,7 +166,7 @@ func TestJobLock_NoOverlap(t *testing.T) {
 					time.Sleep(50 * time.Millisecond)
 					return nil, nil
 				}}
-				r := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{job})...)
+				r := newFakeRunner(t, withPipelineLock(dir, []pipeline.Job{job}, quiet)...)
 				for range runsEach {
 					wg.Go(func() {
 						if _, err := r.Run(t.Context(), name, model.Scope{}); err != nil {
@@ -165,13 +189,13 @@ func TestJobLock_NoOverlap(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "locks")
-			vulnsLocked := withPipelineLock(dir, []pipeline.Job{&fakeJob{name: "vulns"}})[0]
-			release, err := acquirePipelineLock(t.Context(), dir, jobLockRetry)
+			vulnsLocked := withPipelineLock(dir, []pipeline.Job{&fakeJob{name: "vulns"}}, quiet)[0]
+			release, err := acquirePipelineLock(t.Context(), dir, "holder", jobLockRetry, quiet)
 			if err != nil {
 				t.Fatalf("acquirePipelineLock() error = %v", err)
 			}
 			digest := &fakeJob{name: "digest"}
-			digestLocked := withPipelineLock(dir, []pipeline.Job{digest})[0]
+			digestLocked := withPipelineLock(dir, []pipeline.Job{digest}, quiet)[0]
 			done := make(chan error, 1)
 			go func() {
 				_, err := digestLocked.Run(t.Context(), model.Scope{})
@@ -216,12 +240,12 @@ func TestJobLock_CancelledWait(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "locks")
-				release, err := acquirePipelineLock(t.Context(), dir, jobLockRetry)
+				release, err := acquirePipelineLock(t.Context(), dir, "holder", jobLockRetry, quiet)
 				if err != nil {
 					t.Fatalf("acquirePipelineLock() error = %v", err)
 				}
 				job := &fakeJob{name: "timeline"}
-				locked := withPipelineLock(dir, []pipeline.Job{job})[0]
+				locked := withPipelineLock(dir, []pipeline.Job{job}, quiet)[0]
 
 				ctx, cancel := tt.ctx(t.Context())
 				defer cancel()
@@ -263,7 +287,7 @@ func TestJobLock_ReleasedAfterFailure(t *testing.T) {
 	errJob := errors.New("job failed")
 	failing := withPipelineLock(dir, []pipeline.Job{&fakeJob{name: "ingest", run: func(context.Context, model.Scope) (model.Stats, error) {
 		return nil, errJob
-	}}})[0]
+	}}}, quiet)[0]
 	if _, err := failing.Run(t.Context(), model.Scope{}); !errors.Is(err, errJob) {
 		t.Fatalf("Run() error = %v, want %v", err, errJob)
 	}
@@ -271,7 +295,7 @@ func TestJobLock_ReleasedAfterFailure(t *testing.T) {
 	// only if the failed run released the lock.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	release, err := acquirePipelineLock(ctx, dir, jobLockRetry)
+	release, err := acquirePipelineLock(ctx, dir, "holder", jobLockRetry, quiet)
 	if err != nil {
 		t.Fatalf("acquirePipelineLock() after a failed run error = %v, want nil", err)
 	}
@@ -283,7 +307,7 @@ func TestJobLock_ReleasedAfterFailure(t *testing.T) {
 func TestJobLock_FileModes(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "data", "locks")
-	release, err := acquirePipelineLock(t.Context(), dir, jobLockRetry)
+	release, err := acquirePipelineLock(t.Context(), dir, "holder", jobLockRetry, quiet)
 	if err != nil {
 		t.Fatalf("acquirePipelineLock() error = %v", err)
 	}
@@ -309,9 +333,55 @@ func TestJobLock_FileModes(t *testing.T) {
 	}
 }
 
+func TestJobLock_LogsOnceWhenWaiting(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "locks")
+		release, err := acquirePipelineLock(t.Context(), dir, "holder", jobLockRetry, quiet)
+		if err != nil {
+			t.Fatalf("acquirePipelineLock() error = %v", err)
+		}
+		var logs logBuffer
+		logger := slog.New(slog.NewTextHandler(&logs, nil))
+		locked := withPipelineLock(dir, []pipeline.Job{&fakeJob{name: "digest"}}, logger)[0]
+		done := make(chan error, 1)
+		go func() {
+			_, err := locked.Run(t.Context(), model.Scope{})
+			done <- err
+		}()
+		// Several retries in fake time, so a line per retry would show.
+		time.Sleep(5 * jobLockRetry)
+		synctest.Wait()
+		if err := release(); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+		got := logs.String()
+		want := `level=INFO msg="waiting for pipeline lock" job=digest lock=` + filepath.Join(dir, pipelineLockFile)
+		if n := strings.Count(got, "waiting for pipeline lock"); n != 1 || !strings.Contains(got, want) {
+			t.Errorf("logs = %q, want exactly one line containing %q", got, want)
+		}
+	})
+}
+
+func TestJobLock_NoLogWhenFree(t *testing.T) {
+	t.Parallel()
+	var logs logBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	locked := withPipelineLock(filepath.Join(t.TempDir(), "locks"), []pipeline.Job{&fakeJob{name: "ingest"}}, logger)[0]
+	if _, err := locked.Run(t.Context(), model.Scope{}); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got := logs.String(); got != "" {
+		t.Errorf("logs = %q, want nothing when the lock is free", got)
+	}
+}
+
 func TestJobLock_KeepsName(t *testing.T) {
 	t.Parallel()
-	jobs := withPipelineLock(t.TempDir(), []pipeline.Job{&fakeJob{name: "ingest"}, &fakeJob{name: "timeline"}})
+	jobs := withPipelineLock(t.TempDir(), []pipeline.Job{&fakeJob{name: "ingest"}, &fakeJob{name: "timeline"}}, quiet)
 	for i, want := range []string{"ingest", "timeline"} {
 		if got := jobs[i].Name(); got != want {
 			t.Errorf("jobs[%d].Name() = %q, want %q", i, got, want)

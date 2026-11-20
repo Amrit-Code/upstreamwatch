@@ -128,7 +128,8 @@ type message struct {
 
 // heartbeat is the webhook payload of the "all quiet" message.
 type heartbeat struct {
-	Content string `json:"content"`
+	Content         string          `json:"content"`
+	AllowedMentions allowedMentions `json:"allowed_mentions"`
 }
 
 type embed struct {
@@ -192,11 +193,15 @@ func itemEmbed(it model.DigestItem) embed {
 }
 
 // buildHeartbeat lays out the "all quiet" message: the subject and the last
-// two lines of the plain-text digest (the last runs and the counts).
+// two lines of the plain-text digest (the last runs and the counts), with
+// mentions disabled as in buildMessage.
 func buildHeartbeat(d model.Digest) heartbeat {
 	lines := strings.Split(strings.TrimRight(d.PlainText(), "\n"), "\n")
 	tail := lines[max(0, len(lines)-2):]
-	return heartbeat{Content: d.Subject() + "\n" + strings.Join(tail, "\n")}
+	return heartbeat{
+		Content:         d.Subject() + "\n" + strings.Join(tail, "\n"),
+		AllowedMentions: allowedMentions{Parse: []string{}},
+	}
 }
 
 // neutralize escapes Discord markdown in s and caps the result at limit
@@ -226,11 +231,12 @@ func neutralize(s string, limit int) string {
 	return b.String()
 }
 
-// escapeRune returns r with a backslash before each markdown character, and
-// "@" followed by a zero-width space so no mention can form.
+// escapeRune returns r with a backslash before each markdown character and
+// before "<", which opens mention, channel and timestamp markup, and "@"
+// followed by a zero-width space so no mention can form.
 func escapeRune(r rune) string {
 	switch r {
-	case '\\', '*', '_', '~', '`', '|', '>', '[', ']':
+	case '\\', '*', '_', '~', '`', '|', '>', '<', '[', ']':
 		return `\` + string(r)
 	case '@':
 		return "@​"

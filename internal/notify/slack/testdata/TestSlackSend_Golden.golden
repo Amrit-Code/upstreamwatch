@@ -12,7 +12,7 @@
       "type": "section",
       "text": {
         "type": "mrkdwn",
-        "text": "*[A] high  GHSA-xxxx  &lt;https://evil|click&gt; &amp; &lt;!channel&gt;*\nR&amp;D *note* _here_\na &gt; b &lt; c\n<https://upw.example.com/f/1|Open>"
+        "text": "*[A] high  GHSA-xxxx  &lt;https://evil|click&gt; &amp; &lt;!channel&gt; end\u200b* bold*\nR&amp;D \u200b*note\u200b* \u200b_here\u200b_ \u200b~gone\u200b~ \u200b`code\u200b`\na &gt; b &lt; c\n<https://upw.example.com/f/1|Open>"
       }
     },
     {

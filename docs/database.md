@@ -406,7 +406,7 @@ erDiagram
 | id | text primary key; the OSV id, for example `GO-2026-4599` or `GHSA-...` |
 | aliases | JSON array; `[]` when empty |
 | summary | |
-| details | |
+| details | cut at 64 KiB on a rune boundary, ending with an ellipsis, when the record's text is longer; the raw record is kept whole |
 | severity_label | `critical`, `high`, `medium` or `low`; NULL when unknown |
 | cvss_score | NULL when the record has no CVSS v3 vector |
 | cvss_vector | |

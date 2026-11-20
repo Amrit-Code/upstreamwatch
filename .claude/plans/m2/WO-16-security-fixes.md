@@ -50,3 +50,4 @@ Write the full report to the report file named at the top, in the form given in 
 ## Rulings
 
 - 2026-11-20 (lead), on the BLOCKED report: `cmd/upw/jobs.go` is added to your owned files for the one-argument edit (pass `logger` to `withPipelineLock`), as you proposed.
+- 2026-11-20 (lead), on the Astra review: WO16-R1 is fixed in a round (defang the "Now: <rank reason>" line of a changed advisory item; the rank reason can carry an upstream fixed version). WO16-R2 (failed digests stored before this change are resent un-defanged) is dismissed: M2 has never been deployed, so no stored digest payload predates WO-16.

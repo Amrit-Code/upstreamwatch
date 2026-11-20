@@ -113,13 +113,15 @@ func newNotifier(t *testing.T, w *webhook, logs io.Writer) *slack.Notifier {
 }
 
 // golden compares got, indented, with testdata/<name>.golden, rewriting the
-// file under -update.
+// file under -update. Zero-width spaces are written as the JSON escape
+// \u200b, which decodes to the same text, so the golden file shows them.
 func golden(t *testing.T, name string, got []byte) {
 	t.Helper()
-	var ind bytes.Buffer
-	if err := json.Indent(&ind, got, "", "  "); err != nil {
+	var raw bytes.Buffer
+	if err := json.Indent(&raw, got, "", "  "); err != nil {
 		t.Fatalf("request body is not JSON: %v\n%s", err, got)
 	}
+	ind := bytes.NewBuffer(bytes.ReplaceAll(raw.Bytes(), []byte("\u200b"), []byte(`\u200b`)))
 	ind.WriteByte('\n')
 	path := filepath.Join("testdata", name+".golden")
 	if *update {
@@ -153,8 +155,8 @@ func manyItemDigest() model.Digest {
 	}
 	d.New = append(d.New, model.DigestItem{
 		FindingID: 1, Kind: model.KindAdvisory, Tag: "[A]",
-		Headline: "high  GHSA-xxxx  <https://evil|click> & <!channel>",
-		Lines:    []string{"R&D *note* _here_", "a > b < c"},
+		Headline: "high  GHSA-xxxx  <https://evil|click> & <!channel> end* bold",
+		Lines:    []string{"R&D *note* _here_ ~gone~ `code`", "a > b < c"},
 		URL:      "https://upw.example.com/f/1",
 	})
 	for i := 2; i <= 18; i++ {
@@ -225,7 +227,8 @@ func TestSlackSend_Golden(t *testing.T) {
 		t.Errorf("got %d blocks, want 22 (header, 20 sections, context)", len(m.Blocks))
 	}
 	first := m.Blocks[1].Text.Text
-	want := "*[A] high  GHSA-xxxx  &lt;https://evil|click&gt; &amp; &lt;!channel&gt;*\nR&amp;D *note* _here_\na &gt; b &lt; c\n<https://upw.example.com/f/1|Open>"
+	want := "*[A] high  GHSA-xxxx  &lt;https://evil|click&gt; &amp; &lt;!channel&gt; end\u200b* bold*\n" +
+		"R&amp;D \u200b*note\u200b* \u200b_here\u200b_ \u200b~gone\u200b~ \u200b`code\u200b`\na &gt; b &lt; c\n<https://upw.example.com/f/1|Open>"
 	if first != want {
 		t.Errorf("first section = %q\nwant            %q", first, want)
 	}

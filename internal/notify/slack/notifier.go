@@ -195,11 +195,21 @@ func capRunes(s string, limit int) string {
 	return s
 }
 
-// escaper replaces the three characters Slack treats as control characters
-// in message text.
-var escaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+// zeroWidthSpace goes before each mrkdwn formatting character so that Slack
+// shows the character as it is instead of reading it as a marker.
+const zeroWidthSpace = "\u200b"
 
-// escape returns s with Slack's control characters escaped.
+// escaper replaces the three characters Slack treats as control characters
+// in message text, and puts a zero-width space before each mrkdwn
+// formatting character (*, _, ~ and `), so upstream text can neither form
+// markup nor close the bold wrapper around a headline.
+var escaper = strings.NewReplacer(
+	"&", "&amp;", "<", "&lt;", ">", "&gt;",
+	"*", zeroWidthSpace+"*", "_", zeroWidthSpace+"_", "~", zeroWidthSpace+"~", "`", zeroWidthSpace+"`",
+)
+
+// escape returns s with Slack's control characters and mrkdwn formatting
+// characters escaped.
 func escape(s string) string { return escaper.Replace(s) }
 
 // encodeJSON marshals v without HTML escaping, which Slack does not need.

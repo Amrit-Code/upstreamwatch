@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,133 @@ func TestRender_Advisory_Golden(t *testing.T) {
 		t.Fatalf("marshal items: %v", err)
 	}
 	assertGolden(t, t.Name(), append(got, '\n'))
+}
+
+// TestRender_DefangsUpstreamURLs_Golden checks that URLs in advisory text
+// reach the digest broken, while the package URL, repo slug, advisory id and
+// finding URL stay as they are.
+func TestRender_DefangsUpstreamURLs_Golden(t *testing.T) {
+	t.Parallel()
+	summary := model.FindingDetail{
+		Finding: model.Finding{
+			ID: 2001, Kind: model.KindAdvisory, DepVersionID: 9, AdvisoryID: "GHSA-pppp-qqqq-rrrr", Score: 80,
+			RankReason: "high 70; direct +10",
+		},
+		RepoSlug: "example-server",
+		Package:  model.Package{PURL: "pkg:golang/example.com/lib"},
+		Interval: model.DepInterval{ID: 9, ManifestPath: "go.mod", Version: "1.0.0", From: utc(2026, 3, 1, 9)},
+		Advisory: model.Advisory{
+			ID: "GHSA-pppp-qqqq-rrrr", Severity: model.SeverityHigh,
+			Summary: "Sign in at https://phish.example/login or HTTP://x.example to fix",
+		},
+		Exposures: []model.Exposure{{
+			Match:    model.AdvisoryMatch{ExposedFrom: utc(2026, 3, 1, 9), Confidence: model.ConfidenceHigh, FixedVersion: "ftp://fix.example/1.0.1"},
+			Interval: model.DepInterval{ID: 9, ManifestPath: "go.mod", Version: "1.0.0", From: utc(2026, 3, 1, 9)},
+		}},
+	}
+	details := model.FindingDetail{
+		Finding:  model.Finding{ID: 2002, Kind: model.KindAdvisory, AdvisoryID: "GO-2026-0002", Score: 40},
+		RepoSlug: "example-tools",
+		Package:  model.Package{PURL: "pkg:golang/example.com/other"},
+		Advisory: model.Advisory{
+			ID:      "GO-2026-0002",
+			Details: "See hTtPs://evil.example/x and git+ssh://host.example/r. More at http://later.example.",
+		},
+	}
+	var items []model.DigestItem
+	for _, d := range []model.FindingDetail{summary, details} {
+		item, err := renderItem(d, false, "https://upw.example.test", time.UTC)
+		if err != nil {
+			t.Fatalf("renderItem(%d) error = %v", d.Finding.ID, err)
+		}
+		items = append(items, item)
+	}
+	for _, it := range items {
+		for _, l := range append([]string{it.Headline}, it.Lines...) {
+			if strings.Contains(strings.ToLower(l), "http://") || strings.Contains(strings.ToLower(l), "https://") {
+				t.Errorf("item %d line %q holds a live URL", it.FindingID, l)
+			}
+		}
+	}
+	if want := "Sign in at hxxps[://]phish.example/login or hxxp[://]x.example to fix Fixed in ftp[://]fix.example/1.0.1. KEV: no."; items[0].Lines[0] != want {
+		t.Errorf("summary line = %q, want %q", items[0].Lines[0], want)
+	}
+	if want := "See hxxps[://]evil.example/x and git+ssh[://]host.example/r. KEV: no."; items[1].Lines[0] != want {
+		t.Errorf("details line = %q, want %q", items[1].Lines[0], want)
+	}
+	if want := "high  GHSA-pppp-qqqq-rrrr  pkg:golang/example.com/lib 1.0.0  (repo: example-server)"; items[0].Headline != want {
+		t.Errorf("headline = %q, want %q", items[0].Headline, want)
+	}
+	if want := "https://upw.example.test/f/2001"; items[0].URL != want {
+		t.Errorf("URL = %q, want %q", items[0].URL, want)
+	}
+	got, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal items: %v", err)
+	}
+	assertGolden(t, t.Name(), append(got, '\n'))
+}
+
+// TestRender_ChangedAdvisoryDefangsEveryLine checks a CHANGED item whose
+// rank reason quotes a URL-bearing fixed version: no emitted line holds a
+// live URL, the "Now:" line included.
+func TestRender_ChangedAdvisoryDefangsEveryLine(t *testing.T) {
+	t.Parallel()
+	const fixed = "2.0-https://phish.example/login"
+	d := model.FindingDetail{
+		Finding: model.Finding{
+			ID: 2003, Kind: model.KindAdvisory, DepVersionID: 12, AdvisoryID: "GHSA-ssss-tttt-uuuu", Score: 70,
+			RankReason: "high 70; now has a fixed version (" + fixed + ")",
+		},
+		RepoSlug: "example-server",
+		Package:  model.Package{PURL: "pkg:maven/org.example/lib"},
+		Interval: model.DepInterval{ID: 12, ManifestPath: "pom.xml", Version: "1.0", From: utc(2026, 4, 1, 9)},
+		Advisory: model.Advisory{ID: "GHSA-ssss-tttt-uuuu", Severity: model.SeverityHigh, Summary: "Lib mishandles input"},
+		Exposures: []model.Exposure{{
+			Match:    model.AdvisoryMatch{ExposedFrom: utc(2026, 4, 1, 9), Confidence: model.ConfidenceHigh, FixedVersion: fixed},
+			Interval: model.DepInterval{ID: 12, ManifestPath: "pom.xml", Version: "1.0", From: utc(2026, 4, 1, 9)},
+		}},
+	}
+	item, err := renderItem(d, true, "https://upw.example.test", time.UTC)
+	if err != nil {
+		t.Fatalf("renderItem() error = %v", err)
+	}
+	for _, l := range append([]string{item.Headline}, item.Lines...) {
+		if strings.Contains(strings.ReplaceAll(l, "[://]", ""), "://") {
+			t.Errorf("line %q holds a live URL", l)
+		}
+	}
+	want := []string{
+		"Lib mishandles input Fixed in 2.0-hxxps[://]phish.example/login. KEV: no.",
+		"Exposed since 2026-04-01 (pom.xml) — confidence high",
+		"Now: high 70; now has a fixed version (2.0-hxxps[://]phish.example/login)",
+	}
+	if !reflect.DeepEqual(item.Lines, want) {
+		t.Errorf("lines = %q, want %q", item.Lines, want)
+	}
+}
+
+func TestDefangURLs(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, in, want string }{
+		{name: "https", in: "go to https://phish.example/login now", want: "go to hxxps[://]phish.example/login now"},
+		{name: "http upper case", in: "HTTP://x.example", want: "hxxp[://]x.example"},
+		{name: "mixed case https", in: "hTtPs://x.example", want: "hxxps[://]x.example"},
+		{name: "other scheme", in: "ftp://x.example and git+ssh://y.example", want: "ftp[://]x.example and git+ssh[://]y.example"},
+		{name: "scheme glued to a word", in: "xhttps://x.example", want: "xhxxps[://]x.example"},
+		{name: "separator alone", in: "a :// b", want: "a [://] b"},
+		{name: "two in a row", in: "https://a.example/https://b.example", want: "hxxps[://]a.example/hxxps[://]b.example"},
+		{name: "no URL", in: "pkg:golang/example.com/lib GO-2026-1", want: "pkg:golang/example.com/lib GO-2026-1"},
+		{name: "empty", in: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := defangURLs(tt.in); got != tt.want {
+				t.Errorf("defangURLs(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRenderItem_OtherKinds(t *testing.T) {

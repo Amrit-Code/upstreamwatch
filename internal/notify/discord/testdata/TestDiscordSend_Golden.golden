@@ -8,7 +8,7 @@
     },
     {
       "title": "[A] critical  GHSA-xxxx  @​everyone see \\[x\\](http://evil)",
-      "description": "\\*bold\\* \\_it\\_ \\~strike\\~ \\`code\\` \\|spoiler\\| \\> quote \\\\ back",
+      "description": "\\*bold\\* \\_it\\_ \\~strike\\~ \\`code\\` \\|spoiler\\| \\> quote \\\\ back \\<@​123456789012345678\\> \\<t:1700000000\\>",
       "url": "https://upw.example.com/f/2"
     },
     {

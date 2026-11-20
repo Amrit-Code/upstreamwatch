@@ -262,3 +262,73 @@ func TestFetch_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestFetch_RecordIDMismatch(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"GO-2","modified":"2026-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	got, err := newClient(srv.URL).Fetch(t.Context(), "GO-1")
+	if err == nil {
+		t.Fatalf("Fetch() = %+v, nil, want an error for a record with another id", got)
+	}
+	if want := "osv: fetch GO-1: " + srv.Listener.Addr().String() + ": record id differs from the id requested"; err.Error() != want {
+		t.Errorf("Fetch() error = %q, want %q", err, want)
+	}
+	if got.ID != "" || got.Raw != nil {
+		t.Errorf("Fetch() advisory = %+v, want the zero value", got)
+	}
+}
+
+func TestFetch_BodyOverCapIsError(t *testing.T) {
+	t.Parallel()
+	const capBytes = 2 << 20
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "at the cap", size: capBytes},
+		{name: "over the cap", size: capBytes + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			prefix := `{"id":"GO-1","modified":"2026-01-01T00:00:00Z","summary":"`
+			suffix := `"}`
+			body := prefix + strings.Repeat("s", tt.size-len(prefix)-len(suffix)) + suffix
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			_, err := newClient(srv.URL).Fetch(t.Context(), "GO-1")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Fetch() of a %d-byte record error = %v, wantErr %v", tt.size, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFetch_LongDetailsCut(t *testing.T) {
+	t.Parallel()
+	details := strings.Repeat("é", 40<<10) // 80 KiB of two-byte runes
+	body := []byte(`{"id":"GO-1","modified":"2026-01-01T00:00:00Z","details":"` + details + `"}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	got, err := newClient(srv.URL).Fetch(t.Context(), "GO-1")
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if want := strings.Repeat("é", 32<<10) + "…"; got.Details != want {
+		t.Errorf("Details is %d bytes, want %d bytes: 64 KiB of whole runes and …", len(got.Details), len(want))
+	}
+	if !bytes.Equal(got.Raw, body) {
+		t.Error("Raw differs from the served record")
+	}
+}

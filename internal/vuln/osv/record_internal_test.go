@@ -1,9 +1,12 @@
 package osv
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
 )
@@ -189,6 +192,50 @@ func TestParseRecord_MissingModified(t *testing.T) {
 	t.Parallel()
 	if _, err := parseRecord([]byte(`{"id":"GO-1"}`)); err == nil {
 		t.Error("parseRecord() error = nil, want an error for a missing modified time")
+	}
+}
+
+func TestCapDetails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{name: "short", in: "a short text", want: "a short text"},
+		{name: "exactly the cap", in: strings.Repeat("x", detailsMaxBytes), want: strings.Repeat("x", detailsMaxBytes)},
+		{name: "one byte over", in: strings.Repeat("x", detailsMaxBytes+1), want: strings.Repeat("x", detailsMaxBytes) + "…"},
+		// "é" is two bytes; with one "x" in front the cap falls inside a
+		// rune, so the cut moves back to the rune's start.
+		{name: "cap inside a rune", in: "x" + strings.Repeat("é", detailsMaxBytes/2), want: "x" + strings.Repeat("é", detailsMaxBytes/2-1) + "…"},
+		{name: "empty", in: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := capDetails(tt.in)
+			if got != tt.want {
+				t.Errorf("capDetails(%d bytes) = %d bytes ending %q, want %d bytes ending %q",
+					len(tt.in), len(got), got[max(0, len(got)-8):], len(tt.want), tt.want[max(0, len(tt.want)-8):])
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("capDetails(%d bytes) is not valid UTF-8", len(tt.in))
+			}
+		})
+	}
+}
+
+func TestParseRecord_LongDetailsCutRawKept(t *testing.T) {
+	t.Parallel()
+	details := strings.Repeat("d", detailsMaxBytes+100)
+	body := []byte(`{"id":"GO-1","modified":"2026-01-01T00:00:00Z","details":"` + details + `"}`)
+	got, err := parseRecord(body)
+	if err != nil {
+		t.Fatalf("parseRecord() error = %v", err)
+	}
+	if want := details[:detailsMaxBytes] + "…"; got.Details != want {
+		t.Errorf("Details is %d bytes, want %d bytes ending in …", len(got.Details), len(want))
+	}
+	if !bytes.Equal(got.Raw, body) {
+		t.Error("Raw differs from the body; it must keep the exact record")
 	}
 }
 

@@ -34,7 +34,9 @@ func renderItem(d model.FindingDetail, changed bool, baseURL string, loc *time.L
 		item.Headline = advisoryHeadline(d)
 		lines = advisoryLines(d, loc)
 		if changed {
-			lines = append(lines, "Now: "+f.RankReason)
+			// The rank reason can quote the advisory's fixed version, which
+			// is upstream text; it holds no internal URL.
+			lines = append(lines, "Now: "+defangURLs(f.RankReason))
 		}
 	case model.KindJobFailure:
 		item.Tag = "[J]"
@@ -92,11 +94,11 @@ func advisoryLines(d model.FindingDetail, loc *time.Location) []string {
 	if summary == "" {
 		summary = firstSentence(cleanUpstream(d.Advisory.Details))
 	}
-	summary = truncateRunes(summary, maxSummaryRunes)
+	summary = truncateRunes(defangURLs(summary), maxSummaryRunes)
 
 	var facts []string
 	if hasExp && exp.Match.FixedVersion != "" {
-		facts = append(facts, "Fixed in "+exp.Match.FixedVersion+".")
+		facts = append(facts, "Fixed in "+defangURLs(exp.Match.FixedVersion)+".")
 	}
 	if d.Advisory.KEV {
 		facts = append(facts, "KEV: yes.")
@@ -181,6 +183,35 @@ func sanitizeLine(s string) string {
 // collapse to one space with none at either end.
 func cleanUpstream(s string) string {
 	return strings.Join(strings.Fields(replaceControls(s)), " ")
+}
+
+// defangURLs breaks every URL in upstream text so that no channel turns it
+// into a clickable link: each "://" becomes "[://]", and a scheme of "http"
+// or "https" in any case becomes "hxxp" or "hxxps". Apply it once; a second
+// pass would bracket the brackets again.
+func defangURLs(s string) string {
+	const sep = "://"
+	var b strings.Builder
+	for {
+		i := strings.Index(s, sep)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		head := s[:i]
+		switch {
+		case len(head) >= 5 && strings.EqualFold(head[len(head)-5:], "https"):
+			b.WriteString(head[:len(head)-5])
+			b.WriteString("hxxps")
+		case len(head) >= 4 && strings.EqualFold(head[len(head)-4:], "http"):
+			b.WriteString(head[:len(head)-4])
+			b.WriteString("hxxp")
+		default:
+			b.WriteString(head)
+		}
+		b.WriteString("[://]")
+		s = s[i+len(sep):]
+	}
 }
 
 // replaceControls replaces invalid UTF-8 with U+FFFD and every control

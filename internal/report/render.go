@@ -34,7 +34,9 @@ func renderItem(d model.FindingDetail, changed bool, baseURL string, loc *time.L
 		item.Headline = advisoryHeadline(d)
 		lines = advisoryLines(d, loc)
 		if changed {
-			lines = append(lines, "Now: "+f.RankReason)
+			// The rank reason can quote the advisory's fixed version, which
+			// is upstream text; it holds no internal URL.
+			lines = append(lines, "Now: "+defangURLs(f.RankReason))
 		}
 	case model.KindJobFailure:
 		item.Tag = "[J]"

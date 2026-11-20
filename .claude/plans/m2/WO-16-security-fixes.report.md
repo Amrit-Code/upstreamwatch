@@ -178,3 +178,47 @@ Decisions:
 - Tests: TestJobLock_LogsOnceWhenWaiting (synctest; another holder keeps the lock for five retry periods, and exactly one line names the job and the lock path) and TestJobLock_NoLogWhenFree (a free lock logs nothing). Existing joblock tests use a package-level discard logger, `quiet`.
 Outside scope: none new. Docs rows for docs-sync: none needed beyond the new log line, which no doc lists.
 Concerns: none. The Slack concern was accepted by the lead.
+
+## Fix round 2
+
+Status: DONE
+Work order: .claude/plans/m2/WO-16-security-fixes.md (review finding WO16-R1, on top of 1fdaa39)
+Files changed:
+- internal/report/render.go (modified: the "Now:" line of a CHANGED advisory is now `"Now: " + defangURLs(f.RankReason)`)
+- internal/report/render_test.go (modified: new TestRender_ChangedAdvisoryDefangsEveryLine)
+Commands run:
+- `go test -race -count=1 ./internal/report/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/report	1.471s
+- Revert check: the "Now:" line put back to `"Now: "+f.RankReason` on a scratch copy -> FAIL TestRender_ChangedAdvisoryDefangsEveryLine. The file was then restored (`cmp`: restored-ok).
+- `make check` -> exit 0
+  (last lines)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- `go test -race -count=1 ./internal/report/ ./internal/notify/... ./internal/vuln/osv/ ./cmd/upw/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/report	1.352s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/discord	1.239s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/email	1.371s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/ntfy	1.204s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/slack	1.400s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/notify/stdout	1.350s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	1.479s
+  ok  	github.com/Amrit-Code/upstreamwatch/cmd/upw	2.296s
+- `git status --porcelain` -> M internal/report/render.go, M internal/report/render_test.go (plus this report)
+- `gofmt -l .` -> no output
+Decisions:
+- The regression test renders a CHANGED Maven advisory (changed=true) with fixed version "2.0-https://phish.example/login". The fixed version appears both in the match and in a rank reason that quotes it.
+- The test checks every emitted line, headline included. After every "[://]" is removed, no "://" may be left. The three lines are also compared exactly.
+- I wrote the rank reason text in the test by hand to stand in for what internal/vuln builds. It does not call the vuln service.
+- No golden file changed: the existing golden tests use changed=true only on an item with no URL in its rank reason.
+Outside scope: none
+Concerns: none

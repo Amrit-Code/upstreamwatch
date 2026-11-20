@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -195,6 +196,45 @@ func TestRender_DefangsUpstreamURLs_Golden(t *testing.T) {
 		t.Fatalf("marshal items: %v", err)
 	}
 	assertGolden(t, t.Name(), append(got, '\n'))
+}
+
+// TestRender_ChangedAdvisoryDefangsEveryLine checks a CHANGED item whose
+// rank reason quotes a URL-bearing fixed version: no emitted line holds a
+// live URL, the "Now:" line included.
+func TestRender_ChangedAdvisoryDefangsEveryLine(t *testing.T) {
+	t.Parallel()
+	const fixed = "2.0-https://phish.example/login"
+	d := model.FindingDetail{
+		Finding: model.Finding{
+			ID: 2003, Kind: model.KindAdvisory, DepVersionID: 12, AdvisoryID: "GHSA-ssss-tttt-uuuu", Score: 70,
+			RankReason: "high 70; now has a fixed version (" + fixed + ")",
+		},
+		RepoSlug: "example-server",
+		Package:  model.Package{PURL: "pkg:maven/org.example/lib"},
+		Interval: model.DepInterval{ID: 12, ManifestPath: "pom.xml", Version: "1.0", From: utc(2026, 4, 1, 9)},
+		Advisory: model.Advisory{ID: "GHSA-ssss-tttt-uuuu", Severity: model.SeverityHigh, Summary: "Lib mishandles input"},
+		Exposures: []model.Exposure{{
+			Match:    model.AdvisoryMatch{ExposedFrom: utc(2026, 4, 1, 9), Confidence: model.ConfidenceHigh, FixedVersion: fixed},
+			Interval: model.DepInterval{ID: 12, ManifestPath: "pom.xml", Version: "1.0", From: utc(2026, 4, 1, 9)},
+		}},
+	}
+	item, err := renderItem(d, true, "https://upw.example.test", time.UTC)
+	if err != nil {
+		t.Fatalf("renderItem() error = %v", err)
+	}
+	for _, l := range append([]string{item.Headline}, item.Lines...) {
+		if strings.Contains(strings.ReplaceAll(l, "[://]", ""), "://") {
+			t.Errorf("line %q holds a live URL", l)
+		}
+	}
+	want := []string{
+		"Lib mishandles input Fixed in 2.0-hxxps[://]phish.example/login. KEV: no.",
+		"Exposed since 2026-04-01 (pom.xml) — confidence high",
+		"Now: high 70; now has a fixed version (2.0-hxxps[://]phish.example/login)",
+	}
+	if !reflect.DeepEqual(item.Lines, want) {
+		t.Errorf("lines = %q, want %q", item.Lines, want)
+	}
 }
 
 func TestDefangURLs(t *testing.T) {

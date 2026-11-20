@@ -18,9 +18,9 @@ Read this first when resuming. Update it after every accepted work order.
 | WO-10 | report.Service (digest job, heartbeat, retry) | go-builder | 2 | 01,02,05 | merged (major fix: per-record context; review) |
 | WO-11 | findings.Service and ops.Backup | go-mech | 2 | 02,05 | merged (review ACCEPT) |
 | WO-12 | Web: findings list, /f/{id}, ack/snooze/dismiss POSTs | go-mech | 3 | 01,02,05,11 | merged (review ACCEPT) |
-| WO-13 | Wiring: cmd/upw jobs, notifiers config, doctor, upw findings, heartbeat | go-mech | 3 | all wave 2 | dispatched 23:00 |
-| WO-14 | Test suites (vuln, digest, notifiers) | test-writer | 4 | 13 | dispatched 23:03 (parallel with WO-13) |
-| WO-15 | Advisory parity referee vs osv-scanner | go-mech | 4 | 13 | written (osv-scanner 2.7.1 at ~/go/bin, built with CGO_ENABLED=0) |
+| WO-13 | Wiring: cmd/upw jobs, notifiers config, doctor, upw findings, heartbeat | go-mech | 3 | all wave 2 | merged (2 fix rounds: unblocked; Astra REVISE -> shared pipeline lock, LastFire cutoff, OSV fixture) |
+| WO-14 | Test suites (vuln, digest, notifiers) | test-writer | 4 | 13 | merged (fix round: test tightening; review ACCEPT) |
+| WO-15 | Advisory parity referee vs osv-scanner | go-mech | 4 | 13 | in progress (cut off by usage limit 23:40, resumed 01:30) |
 
 Then: Fable review of M2, security review (Sonnet), docs-sync, checklist run, owner items (SMTP UPW-42, VM parity, digest arrives, ack on VM).
 
@@ -38,3 +38,7 @@ Then: Fable review of M2, security review (Sonnet), docs-sync, checklist run, ow
 - Deferred follow-ups (not yet in a WO): rc toolchain versions (`go1.26rc1`) are not normalised to `1.26.0-rc1`, so they skip ranges (WO-06 review); `migrate.go` creates schema_migrations outside the write queue (startup only); `store/interfaces_test.go` should assert the M2 consumer interfaces (lead verified by a scratch compile at fc47d4c); docs-sync pending for wave 1.
 - 23:02 Waves 1 and 2 and WO-12 merged; main green at 3e5ef4d. Docs synced through wave 1 (df0989a); next docs-sync after WO-13.
 - Deferred follow-ups added: a repo whose intervals all vanished keeps its advisory findings unresolved (vuln scope comes from intervals; WO-07 review); undecodable failed digest payload fails every digest run (WO-10 review); `osv` modified_id.csv uses ValidatorsNone (full download each run).
+- 23:30 All M2 code merged; main green at e00d8d2. Checklist items 1, 3, 4, 6-14, 19 passed (7d469f3). Docs synced to e00d8d2 (231000f). govulncheck v1.9.0 clean.
+- 23:35 Security review (Sonnet): 1 medium (bare URLs from advisory text stay clickable in every channel; defang once in report), 2 low (Discord escape `<` + heartbeat allowed_mentions + Slack `*_~` backtick; OSV Fetch body cap ~2 MiB + id equality check + cap Details). Not yet fixed: goes into WO-16 with the Fable findings.
+- 23:40 Usage limit hit; WO-15 and the Fable review were cut off mid-run. 01:29 resumed both via SendMessage.
+- Follow-ups still open: silent wait on the shared pipeline lock (log a line); duplicated finding display rules in cmd/upw/findings.go and internal/web/findings.go; rc toolchain normalisation; repo with vanished intervals keeps findings; undecodable failed digest payload; outbound-client skill text needs the SMTP loopback exception.

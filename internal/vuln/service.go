@@ -137,7 +137,7 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 	if err != nil {
 		return stats, err
 	}
-	deltas, errs, err := s.readDeltas(ctx, all, stats)
+	deltas, errs, err := s.readDeltas(ctx, all, now, stats)
 	if err != nil {
 		return stats, err
 	}
@@ -174,7 +174,7 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 	if err := s.replaceMatches(ctx, inScope, matches, stats); err != nil {
 		return stats, err
 	}
-	if err := s.writeFindings(ctx, inScope, matches, advisories, now, stats); err != nil {
+	if err := s.writeFindings(ctx, scope, inScope, matches, advisories, now, stats); err != nil {
 		return stats, err
 	}
 
@@ -249,11 +249,12 @@ type ecoDelta struct {
 func cursorKey(ecosystem string) string { return "osv.modified." + ecosystem }
 
 // readDeltas reads the delta of every ecosystem in use. An ecosystem with no
-// cursor gets one at its newest record and contributes no refs; the others
-// return the refs modified since their cursor. A failed download is returned
-// in the collected errors and leaves that ecosystem's cursor alone; a store
-// failure stops the run.
-func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, stats model.Stats) ([]ecoDelta, []error, error) {
+// cursor gets one at the earlier of its newest record and runStart, the time
+// taken before the query batch, and contributes no refs; the others return
+// the refs modified since their cursor. A failed download is returned in the
+// collected errors and leaves that ecosystem's cursor alone; a store failure
+// stops the run.
+func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, runStart time.Time, stats model.Stats) ([]ecoDelta, []error, error) {
 	var (
 		deltas    []ecoDelta
 		collected []error
@@ -284,10 +285,17 @@ func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, stat
 			continue
 		}
 		if cursor.IsZero() {
-			// The query batch covers every record that exists now, so the
-			// first cursor is the newest record and none is fetched.
+			// The query batch covers every record that existed when the run
+			// started, so the first cursor is the newest record and none is
+			// fetched. A record modified after the run started may have
+			// missed the query batch, so the cursor goes no later than the
+			// start and the next delta reads it.
 			if newest, ok := newestModified(refs); ok {
-				if err := s.kv.SetKV(ctx, key, newest.UTC().Format(kvTimeLayout)); err != nil {
+				first := newest.UTC()
+				if runStart.Before(first) {
+					first = runStart
+				}
+				if err := s.kv.SetKV(ctx, key, first.Format(kvTimeLayout)); err != nil {
 					return nil, nil, fmt.Errorf("store %s delta cursor: %w", eco, err)
 				}
 			}
@@ -349,7 +357,9 @@ type fetchItem struct {
 }
 
 // fetchAll fetches every advisory in the query refs and deltas that is not
-// stored or is stored with an older modified time, and saves it. It returns
+// stored or is stored with an older modified time, and saves it. A delta
+// record whose id is not stored is saved only when it names a package in
+// used; a record whose id is stored is saved whatever it names. It returns
 // the ids whose fetch failed and those failures; a not-found record is
 // counted and skipped, and a store failure stops the run.
 func (s *Service) fetchAll(ctx context.Context, queryRefs []model.AdvisoryRef, deltas []ecoDelta, used map[string]bool, stats model.Stats) (map[string]bool, []error, error) {
@@ -410,7 +420,10 @@ func (s *Service) fetchAll(ctx context.Context, queryRefs []model.AdvisoryRef, d
 			continue
 		}
 		stats["fetched"]++
-		if !it.fromQuery && !affectsAny(adv, used) {
+		// A stored advisory is always saved, so a correction that drops a
+		// package in use removes its match; only a new delta record must name
+		// a package in use to be kept.
+		if _, isStored := stored[id]; !isStored && !it.fromQuery && !affectsAny(adv, used) {
 			stats["delta_irrelevant"]++
 			continue
 		}
@@ -600,9 +613,10 @@ func repoIDs(intervals []model.RepoInterval) []int64 {
 }
 
 // writeFindings upserts one finding per repo, package and advisory with a
-// match, then resolves the unresolved advisory findings of the repos in scope
-// that were not upserted.
-func (s *Service) writeFindings(ctx context.Context, inScope []model.RepoInterval, matches []intervalMatch, advisories []model.Advisory, now time.Time, stats model.Stats) error {
+// match, then resolves the unresolved advisory findings in scope that were
+// not upserted: every one on an unscoped run, including those of repos left
+// with no interval, and on a scoped run those of the repo in scope.
+func (s *Service) writeFindings(ctx context.Context, scope model.Scope, inScope []model.RepoInterval, matches []intervalMatch, advisories []model.Advisory, now time.Time, stats model.Stats) error {
 	byID := make(map[string]model.Advisory, len(advisories))
 	for _, adv := range advisories {
 		byID[adv.ID] = adv
@@ -625,7 +639,7 @@ func (s *Service) writeFindings(ctx context.Context, inScope []model.RepoInterva
 	}
 	repos := repoIDs(inScope)
 	for _, f := range unresolved {
-		if produced[f.Fingerprint] || !slices.Contains(repos, f.RepoID) {
+		if produced[f.Fingerprint] || (!scope.All() && !slices.Contains(repos, f.RepoID)) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {

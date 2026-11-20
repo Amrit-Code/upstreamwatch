@@ -67,13 +67,16 @@ func toQuery(pv model.PackageVersion) (osvQuery, bool) {
 	if err != nil || name == "" {
 		return osvQuery{}, false
 	}
-	if model.PURLType(pv.PURL) == "maven" {
+	switch model.PURLType(pv.PURL) {
+	case "maven":
 		// pkg:maven/<group>/<artifact> is "<group>:<artifact>" in OSV.
 		i := strings.LastIndexByte(name, '/')
 		if i <= 0 || i == len(name)-1 {
 			return osvQuery{}, false
 		}
 		name = name[:i] + ":" + name[i+1:]
+	case "pypi":
+		name = model.PyPIName(name)
 	}
 	version := pv.Version
 	toolchain := pv.PURL == toolchainPURL

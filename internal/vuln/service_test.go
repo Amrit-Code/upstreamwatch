@@ -665,3 +665,97 @@ func TestRun_Cancelled(t *testing.T) {
 			len(h.src.queryCalls), len(h.store.replaceCalls), len(h.store.upserts))
 	}
 }
+
+func TestRun_DeltaCorrectionDropsPackage(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil, nil, vuln.Options{})
+	h.run(t, model.Scope{})
+	h.src.resetCalls()
+	h.store.resetCalls()
+
+	// Upstream corrects advLib to name a package no repo uses.
+	corrected := goRecord(advLib, "pkg:golang/github.com/example-org/unused", "1.2.5", model.SeverityHigh, day(3), at(48))
+	h.src.records[advLib] = corrected
+	h.src.prepend("Go", model.AdvisoryRef{ID: advLib, Modified: at(48)})
+	h.now = runAt.Add(6 * time.Hour)
+	stats := h.run(t, model.Scope{})
+
+	if got := h.store.advisories[advLib]; !got.Modified.Equal(at(48)) || got.Affected[0].Package.PURL != corrected.Affected[0].Package.PURL {
+		t.Errorf("stored %s = %+v, want the corrected record", advLib, got)
+	}
+	for repo, ms := range h.store.matches {
+		for _, m := range ms {
+			if m.AdvisoryID == advLib {
+				t.Errorf("repo %d still has a match of corrected %s: %+v", repo, advLib, m)
+			}
+		}
+	}
+	wantResolved := []string{fingerprint(adminSlug, libPURL, advLib), fingerprint(serverSlug, libPURL, advLib)}
+	slices.Sort(h.store.resolved)
+	if !reflect.DeepEqual(h.store.resolved, wantResolved) {
+		t.Errorf("resolved = %v, want %v", h.store.resolved, wantResolved)
+	}
+	checkStats(t, stats, map[string]int64{
+		"delta_refs": 1, "fetched": 1, "delta_irrelevant": 0, "advisories_saved": 1, "findings_resolved": 2,
+	})
+}
+
+func TestRun_FirstCursorNotAfterRunStart(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil, nil, vuln.Options{})
+	// GO-2026-0400 was published after the run started, between the query
+	// batch and the modified_id.csv download, so the query batch missed it.
+	const late = "GO-2026-0400"
+	h.src.records[late] = goRecord(late, libPURL, "1.2.5", model.SeverityHigh, runAt, runAt.Add(5*time.Minute))
+	h.src.prepend("Go", model.AdvisoryRef{ID: late, Modified: runAt.Add(5 * time.Minute)})
+	h.run(t, model.Scope{})
+
+	if got, want := h.store.kv[cursorKV], runAt.Format(time.RFC3339Nano); got != want {
+		t.Errorf("kv[%s] = %q, want %q (the run's start, not the newer delta line)", cursorKV, got, want)
+	}
+	if _, ok := h.store.advisories[late]; ok {
+		t.Fatalf("%s saved on the first run, want it left to the next delta", late)
+	}
+
+	h.src.resetCalls()
+	h.now = runAt.Add(6 * time.Hour)
+	stats := h.run(t, model.Scope{})
+	if want := []modCall{{ecosystem: "Go", since: runAt}}; !reflect.DeepEqual(h.src.modCalls, want) {
+		t.Errorf("ModifiedSince calls = %v, want %v", h.src.modCalls, want)
+	}
+	if _, ok := h.store.advisories[late]; !ok {
+		t.Errorf("%s not saved by the second run's delta", late)
+	}
+	if _, ok := h.store.finding(fingerprint(serverSlug, libPURL, late)); !ok {
+		t.Errorf("no finding for %s on %s", late, serverSlug)
+	}
+	checkStats(t, stats, map[string]int64{"delta_refs": 1, "fetched": 1, "advisories_saved": 1})
+}
+
+func TestRun_ResolvesFindingsOfRepoWithoutIntervals(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil, nil, vuln.Options{})
+	h.run(t, model.Scope{})
+	h.src.resetCalls()
+	h.store.resetCalls()
+
+	// Every interval of the admin repo vanishes, for example because its
+	// manifests were deleted and the timeline rebuilt.
+	h.store.intervals = slices.DeleteFunc(slices.Clone(h.store.intervals), func(ri model.RepoInterval) bool {
+		return ri.RepoID == adminID
+	})
+	h.now = runAt.Add(6 * time.Hour)
+	stats := h.run(t, model.Scope{})
+
+	wantResolved := []string{fingerprint(adminSlug, libPURL, advLib), fingerprint(adminSlug, libPURL, advLibB)}
+	slices.Sort(h.store.resolved)
+	if !reflect.DeepEqual(h.store.resolved, wantResolved) {
+		t.Errorf("resolved = %v, want %v", h.store.resolved, wantResolved)
+	}
+	for _, fp := range wantResolved {
+		if f, _ := h.store.finding(fp); !f.ResolvedAt.Equal(h.now) {
+			t.Errorf("finding %s resolved at %v, want %v", fp, f.ResolvedAt, h.now)
+		}
+	}
+	checkStats(t, stats, map[string]int64{"findings_resolved": 2})
+}

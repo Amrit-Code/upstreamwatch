@@ -117,6 +117,51 @@ func TestParse_Python(t *testing.T) {
 	}
 }
 
+func TestParse_PyPINamesNormalised(t *testing.T) {
+	t.Parallel()
+	const requirements = "ruamel.yaml==0.17.0\nZope_Interface==5.0\nFoo--Bar>=1\nruamel_yaml==0.18.0\n"
+	got, err := newExtractor(true).Parse("requirements.txt", []byte(requirements))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	checkParsed(t, "requirements.txt", got, model.ParsedManifest{Ecosystem: "pypi", Kind: model.ManifestKindManifest, Dependencies: []model.Dependency{
+		pypiDep("ruamel.yaml", "ruamel-yaml", "0.17.0", "==0.17.0", model.DirectYes, "runtime"),
+		pypiDep("Zope_Interface", "zope-interface", "5.0", "==5.0", model.DirectYes, "runtime"),
+		pypiDep("Foo--Bar", "foo-bar", "", ">=1", model.DirectYes, "runtime"),
+		// ruamel_yaml is the same project as ruamel.yaml and is dropped.
+	}})
+
+	const pyproject = "[project]\nname = \"example-app\"\nversion = \"0.1.0\"\ndependencies = [\"ruamel.yaml==0.17.0\"]\n"
+	got, err = newExtractor(true).Parse("pyproject.toml", []byte(pyproject))
+	if err != nil {
+		t.Fatalf("Parse(pyproject.toml) error = %v", err)
+	}
+	checkParsed(t, "pyproject.toml", got, model.ParsedManifest{Ecosystem: "pypi", Kind: model.ManifestKindManifest, Dependencies: []model.Dependency{
+		pypiDep("ruamel.yaml", "ruamel-yaml", "0.17.0", "==0.17.0", model.DirectYes, "runtime"),
+	}})
+}
+
+func TestPackageURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, purl, depName, want string
+	}{
+		{"pypi dotted name", "pkg:pypi/ruamel.yaml@0.17.0", "ruamel.yaml", "pkg:pypi/ruamel-yaml"},
+		{"pypi qualifier dropped", "pkg:pypi/example-git@1.0.0?repository_url=https://example.com/simple", "Example_Git", "pkg:pypi/example-git"},
+		{"pypi name with a space keeps the library's", "pkg:pypi/foo%20bar", "foo bar", "pkg:pypi/foo%20bar"},
+		{"pypi empty name keeps the library's", "pkg:pypi/x@1", "", "pkg:pypi/x"},
+		{"other type untouched", "pkg:githubactions/actions/checkout@v4", "actions/checkout", "pkg:githubactions/actions/checkout"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := packageURL(tt.purl, tt.depName); got != tt.want {
+				t.Errorf("packageURL(%q, %q) = %q, want %q", tt.purl, tt.depName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_Actions(t *testing.T) {
 	t.Parallel()
 	action := func(name, purlName, ref string) model.Dependency {

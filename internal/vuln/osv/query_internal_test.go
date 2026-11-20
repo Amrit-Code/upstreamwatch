@@ -24,6 +24,8 @@ func TestToQuery(t *testing.T) {
 		{"pkg:golang/toolchain", "1.26.3", "stdlib", "Go", "1.26.3", true},
 		{"pkg:golang/toolchain", "1.26rc1", "stdlib", "Go", "1.26rc1", true},
 		{"pkg:pypi/pyyaml", "6.0.1", "pyyaml", "PyPI", "6.0.1", true},
+		{"pkg:pypi/ruamel.yaml", "0.17.0", "ruamel-yaml", "PyPI", "0.17.0", true},
+		{"pkg:pypi/Zope_Interface", "5.0", "zope-interface", "PyPI", "5.0", true},
 		{"pkg:githubactions/actions/checkout", "v4.1.1", "actions/checkout", "GitHub Actions", "v4.1.1", true},
 		{"pkg:npm/%40scope/name", "1.0.0", "@scope/name", "npm", "1.0.0", true},
 		{"pkg:cargo/serde", "1.0.200", "serde", "crates.io", "1.0.200", true},

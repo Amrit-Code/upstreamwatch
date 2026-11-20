@@ -49,3 +49,4 @@ Write the full report to the report file named at the top, in the form given in 
 
 ## Rulings
 
+- 2026-11-20 (lead), on the BLOCKED report: `cmd/upw/jobs.go` is added to your owned files for the one-argument edit (pass `logger` to `withPipelineLock`), as you proposed.

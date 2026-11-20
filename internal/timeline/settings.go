@@ -9,7 +9,7 @@ import (
 // extractorVersion is part of every settings fingerprint, so a change to it
 // rebuilds every repo's timeline from the root. Bump when any extractor's
 // output for the same bytes changes.
-const extractorVersion = 1
+const extractorVersion = 2
 
 // settingsFingerprint returns the canonical text of the settings t's timeline
 // is built with, for example

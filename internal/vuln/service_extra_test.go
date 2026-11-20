@@ -314,25 +314,75 @@ func TestRun_FirstAffectedEntryInRecordOrder(t *testing.T) {
 	}
 }
 
-func TestRun_FirstCursorNotSetFromEmptyDelta(t *testing.T) {
+// checkPublishedBetweenRunsFetched publishes an advisory for the server's lib
+// v1.2.0 after h's first run, runs again and expects the second run's delta,
+// read from the first run's start, to fetch it and raise its finding without
+// querying the already queried pairs again.
+func checkPublishedBetweenRunsFetched(t *testing.T, h *harness) {
+	t.Helper()
+	if got, want := h.store.kv[cursorKV], "2026-04-02T00:10:00Z"; got != want {
+		t.Fatalf("kv[%s] = %q after the first run, want %q (the run's start)", cursorKV, got, want)
+	}
+	const late = "GO-2026-0500"
+	h.src.records[late] = goRecord(late, libPURL, "1.2.5", model.SeverityHigh, runAt.Add(time.Hour), runAt.Add(time.Hour))
+	h.src.prepend("Go", model.AdvisoryRef{ID: late, Modified: runAt.Add(time.Hour)})
+	h.src.resetCalls()
+	h.now = runAt.Add(6 * time.Hour)
+	stats := h.run(t, model.Scope{})
+
+	if len(h.src.queryCalls) != 0 {
+		t.Errorf("QueryBatch calls = %v, want none (the pairs were queried by the first run)", h.src.queryCalls)
+	}
+	if want := []modCall{{ecosystem: "Go", since: runAt}}; !reflect.DeepEqual(h.src.modCalls, want) {
+		t.Errorf("second run ModifiedSince calls = %v, want %v", h.src.modCalls, want)
+	}
+	if _, ok := h.store.advisories[late]; !ok {
+		t.Errorf("%s not saved by the second run's delta", late)
+	}
+	if _, ok := h.store.finding(fingerprint(serverSlug, libPURL, late)); !ok {
+		t.Errorf("no finding for %s on %s", late, serverSlug)
+	}
+	checkStats(t, stats, map[string]int64{"delta_refs": 1, "fetched": 1, "advisories_saved": 1})
+}
+
+func TestRun_FirstCursorAtRunStartWithEmptyDelta(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil, nil, vuln.Options{})
 	h.src.modified["Go"] = nil
 	h.run(t, model.Scope{})
-	if v, ok := h.store.kv[cursorKV]; ok {
-		t.Errorf("kv[%s] = %q after an empty delta list, want no cursor", cursorKV, v)
+	checkPublishedBetweenRunsFetched(t, h)
+}
+
+func TestRun_FirstCursorAtRunStartWhenDeltaWouldFail(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil, nil, vuln.Options{})
+	h.src.modErr["Go"] = errors.New("modified_id.csv: status 503")
+	if _, err := h.svc.Run(t.Context(), model.Scope{}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil (the delta is not read without a cursor)", err)
 	}
-	h.src.resetCalls()
-	h.now = runAt.Add(6 * time.Hour)
-	h.run(t, model.Scope{})
-	if want := []modCall{{ecosystem: "Go"}}; !reflect.DeepEqual(h.src.modCalls, want) {
-		t.Errorf("second run ModifiedSince calls = %v, want %v (still no cursor)", h.src.modCalls, want)
+	if len(h.src.modCalls) != 0 {
+		t.Errorf("first run ModifiedSince calls = %v, want none", h.src.modCalls)
 	}
+	delete(h.src.modErr, "Go")
+	checkPublishedBetweenRunsFetched(t, h)
 }
 
 func TestRun_EcosystemsSortedWithExtras(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil, nil, vuln.Options{EcosystemsExtra: []string{"npm", "PyPI", "Go", ""}})
+	h.run(t, model.Scope{})
+	for _, eco := range []string{"Go", "PyPI", "npm"} {
+		if got := h.store.kv["osv.modified."+eco]; got != "2026-04-02T00:10:00Z" {
+			t.Errorf("kv[osv.modified.%s] = %q after the first run, want the run's start", eco, got)
+		}
+	}
+	if v, ok := h.store.kv["osv.modified."]; ok {
+		t.Errorf("cursor stored for the empty ecosystem: %q", v)
+	}
+	// The first run sets the cursors without reading any delta; the second
+	// reads each ecosystem's.
+	h.src.resetCalls()
+	h.now = runAt.Add(6 * time.Hour)
 	h.run(t, model.Scope{})
 	var got []string
 	for _, c := range h.src.modCalls {
@@ -375,9 +425,8 @@ func TestRun_FetchSetKeepsNewestModified(t *testing.T) {
 			if got := h.store.advisories[advLib].Modified; !got.Equal(at(10)) {
 				t.Fatalf("stored %s modified = %v after the first run, want %v", advLib, got, at(10))
 			}
-			if got := h.store.kv[cursorKV]; got != "2026-04-01T00:00:00Z" {
-				t.Fatalf("kv[%s] = %q after the first run, want at(0)", cursorKV, got)
-			}
+			// The cursor is at(0), as an earlier run left it.
+			h.store.kv[cursorKV] = at(0).Format(time.RFC3339)
 			h.src.resetCalls()
 
 			changed := h.src.records[advLib]

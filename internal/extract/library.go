@@ -49,7 +49,7 @@ func (e *Extractor) parseWithLibrary(p string, content []byte, kind model.Manife
 		}
 		d := model.Dependency{
 			Package: model.Package{
-				PURL:      versionless(dep.PURL),
+				PURL:      packageURL(dep.PURL, dep.Name),
 				Ecosystem: res.Ecosystem,
 				Name:      dep.Name,
 			},
@@ -72,6 +72,35 @@ func (e *Extractor) parseWithLibrary(p string, content []byte, kind model.Manife
 		pm.Dependencies = append(pm.Dependencies, d)
 	}
 	return pm, nil
+}
+
+// packageURL returns the version-less package URL of a dependency the
+// library gave purl. A PyPI package URL is rebuilt from the name as written,
+// normalised with model.PyPIName, because the library folds "_" but keeps
+// "." and repeated separators, which advisories spell in the PEP 503 form. A
+// name holding a character no PyPI project name has keeps the library's
+// percent-encoded package URL.
+func packageURL(purl, name string) string {
+	if model.PURLType(purl) == ecosystemPyPI && isPyPIProjectName(name) {
+		return "pkg:pypi/" + model.PyPIName(name)
+	}
+	return versionless(purl)
+}
+
+// isPyPIProjectName reports whether name is non-empty and made only of the
+// ASCII letters, digits, "-", "_" and "." a PyPI project name may hold.
+func isPyPIProjectName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // exactPin returns X for a Python constraint "==X" that pins one version: no

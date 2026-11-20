@@ -271,7 +271,7 @@ func toPackage(ecosystem, name string) (model.Package, bool) {
 		}
 		return model.Package{PURL: "pkg:golang/" + name, Ecosystem: typ, Name: name}, true
 	case "pypi":
-		n := normalizePyPI(name)
+		n := model.PyPIName(name)
 		return model.Package{PURL: "pkg:pypi/" + n, Ecosystem: typ, Name: n}, true
 	case "githubactions":
 		return model.Package{PURL: "pkg:githubactions/" + name, Ecosystem: ecosystemActions, Name: name}, true
@@ -300,27 +300,4 @@ func purlTypeOf(eco string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// normalizePyPI applies the PEP 503 name normalisation: lower case, with
-// every run of "-", "_" and "." replaced by one "-".
-func normalizePyPI(name string) string {
-	var b strings.Builder
-	b.Grow(len(name))
-	sep := false
-	for _, r := range strings.ToLower(name) {
-		if r == '-' || r == '_' || r == '.' {
-			sep = true
-			continue
-		}
-		if sep {
-			b.WriteByte('-')
-			sep = false
-		}
-		b.WriteRune(r)
-	}
-	if sep {
-		b.WriteByte('-')
-	}
-	return b.String()
 }

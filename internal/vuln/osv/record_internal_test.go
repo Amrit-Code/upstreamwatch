@@ -23,6 +23,7 @@ func TestToPackage(t *testing.T) {
 		{"Go", "github.com/gin-gonic/gin", model.Package{PURL: "pkg:golang/github.com/gin-gonic/gin", Ecosystem: "golang", Name: "github.com/gin-gonic/gin"}, true},
 		{"PyPI", "PyYAML", model.Package{PURL: "pkg:pypi/pyyaml", Ecosystem: "pypi", Name: "pyyaml"}, true},
 		{"PyPI", "Zope.Interface__Extra--x", model.Package{PURL: "pkg:pypi/zope-interface-extra-x", Ecosystem: "pypi", Name: "zope-interface-extra-x"}, true},
+		{"PyPI", "ruamel.yaml", model.Package{PURL: "pkg:pypi/ruamel-yaml", Ecosystem: "pypi", Name: "ruamel-yaml"}, true},
 		{"GitHub Actions", "actions/checkout", model.Package{PURL: "pkg:githubactions/actions/checkout", Ecosystem: "github-actions", Name: "actions/checkout"}, true},
 		{"npm", "@scope/name", model.Package{PURL: "pkg:npm/%40scope/name", Ecosystem: "npm", Name: "@scope/name"}, true},
 		{"npm", "lodash", model.Package{PURL: "pkg:npm/lodash", Ecosystem: "npm", Name: "lodash"}, true},
@@ -236,24 +237,6 @@ func TestParseRecord_LongDetailsCutRawKept(t *testing.T) {
 	}
 	if !bytes.Equal(got.Raw, body) {
 		t.Error("Raw differs from the body; it must keep the exact record")
-	}
-}
-
-func TestNormalizePyPI(t *testing.T) {
-	t.Parallel()
-	tests := []struct{ in, want string }{
-		{"PyYAML", "pyyaml"},
-		{"zope.interface", "zope-interface"},
-		{"a__b--c..d", "a-b-c-d"},
-		{"a-_.b", "a-b"},
-		{"_lead", "-lead"},
-		{"trail.", "trail-"},
-		{"requests", "requests"},
-	}
-	for _, tt := range tests {
-		if got := normalizePyPI(tt.in); got != tt.want {
-			t.Errorf("normalizePyPI(%q) = %q, want %q", tt.in, got, tt.want)
-		}
 	}
 }
 

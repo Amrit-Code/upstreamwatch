@@ -61,6 +61,32 @@ func TestParse_UVLockLocalSources(t *testing.T) {
 	}})
 }
 
+func TestParse_UVLockDottedName(t *testing.T) {
+	t.Parallel()
+	const lock = `version = 1
+revision = 2
+requires-python = ">=3.11"
+
+[[package]]
+name = "ruamel.yaml"
+version = "0.17.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "Zope_Interface"
+version = "5.0"
+source = { registry = "https://pypi.org/simple" }
+`
+	got, err := newExtractor(true).Parse("uv.lock", []byte(lock))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	checkParsed(t, "uv.lock", got, model.ParsedManifest{Ecosystem: "pypi", Kind: model.ManifestKindLockfile, Dependencies: []model.Dependency{
+		pypiDep("ruamel.yaml", "ruamel-yaml", "0.17.0", "0.17.0", model.DirectUnknown, "runtime"),
+		pypiDep("Zope_Interface", "zope-interface", "5.0", "5.0", model.DirectUnknown, "runtime"),
+	}})
+}
+
 // TestParse_UVLockTyper parses the uv.lock of github.com/fastapi/typer
 // (MIT licence), whose only local package is typer itself.
 func TestParse_UVLockTyper(t *testing.T) {

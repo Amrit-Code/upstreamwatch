@@ -15,11 +15,11 @@ func TestSettingsFingerprint(t *testing.T) {
 
 	t.Run("canonical text", func(t *testing.T) {
 		t.Parallel()
-		want := `v1;unity=false;eco="golang","pypi";exclude="docs/site","examples"`
+		want := `v2;unity=false;eco="golang","pypi";exclude="docs/site","examples"`
 		if got := settingsFingerprint(base); got != want {
 			t.Errorf("settingsFingerprint(%+v) = %q, want %q", base, got, want)
 		}
-		if got, want := settingsFingerprint(TargetSettings{}), "v1;unity=false;eco=;exclude="; got != want {
+		if got, want := settingsFingerprint(TargetSettings{}), "v2;unity=false;eco=;exclude="; got != want {
 			t.Errorf("settingsFingerprint(zero) = %q, want %q", got, want)
 		}
 	})

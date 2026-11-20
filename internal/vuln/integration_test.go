@@ -110,8 +110,8 @@ func TestRun_FindingStableAcrossRuns(t *testing.T) {
 	if after.Score != 100 || after.RankReason != "high 70; direct +10; exposed now +20; fixed in 1.2.5" {
 		t.Errorf("score %v, reason %q, want 100 and the high/direct/exposed reason", after.Score, after.RankReason)
 	}
-	if cursor, err := db.GetKV(t.Context(), cursorKV); err != nil || cursor != "2026-04-01T00:00:00Z" {
-		t.Errorf("GetKV(%s) = %q, %v, want the newest delta line", cursorKV, cursor, err)
+	if cursor, err := db.GetKV(t.Context(), cursorKV); err != nil || cursor != "2026-04-02T00:10:00Z" {
+		t.Errorf("GetKV(%s) = %q, %v, want the first run's start", cursorKV, cursor, err)
 	}
 }
 

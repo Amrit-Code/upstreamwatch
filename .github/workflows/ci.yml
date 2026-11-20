@@ -31,6 +31,8 @@ jobs:
     env:
       GIT_PKGS_VERSION: 0.22.0
       GIT_PKGS_SHA256: 7f65d7e9b3ca1f07c249e79c4e1283fdea9c16b6b10022b4b546292e96dcb08e
+      OSV_SCANNER_VERSION: 2.7.1
+      OSV_SCANNER_SHA256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,6 +48,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/git-pkgs"
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/git-pkgs" git-pkgs
           echo "$RUNNER_TEMP/git-pkgs" >> "$GITHUB_PATH"
+      - name: Install osv-scanner
+        run: |
+          binary="osv-scanner_linux_amd64"
+          curl -fsSL -o "$RUNNER_TEMP/$binary" "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/$binary"
+          echo "$OSV_SCANNER_SHA256  $RUNNER_TEMP/$binary" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/osv-scanner"
+          install -m 0755 "$RUNNER_TEMP/$binary" "$RUNNER_TEMP/osv-scanner/osv-scanner"
+          echo "$RUNNER_TEMP/osv-scanner" >> "$GITHUB_PATH"
       - name: make e2e
         run: make e2e
 

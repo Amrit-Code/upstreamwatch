@@ -76,9 +76,8 @@ func TestPyPIDottedNameMatches(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(pypiDottedRecord))
 	})
-	mux.HandleFunc("GET /bucket/PyPI/modified_id.csv", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("2026-03-20T00:00:00Z," + advID + "\n"))
-	})
+	// No bucket route: a first run stores the PyPI cursor without reading
+	// modified_id.csv, and any bucket request would fail the run.
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Amrit-Code/upstreamwatch/internal/model"
@@ -95,7 +96,9 @@ func (s *Service) Name() string { return jobName }
 // the exploit signals when due, then rebuilds the matches and findings of the
 // repos in scope. With scope.RepoSlug set, querying, matching and findings
 // cover that repo only, while the deltas and signals, which are global, still
-// run; a slug with no stored interval is an error wrapping model.ErrNotFound.
+// run. A slug with no stored interval only resolves that repo's unresolved
+// advisory findings and returns nil, or, when it has none, returns an error
+// wrapping model.ErrNotFound.
 // The newly queried pairs are recorded as queried only when every advisory
 // the query batch named was fetched or found missing. A store failure or a failed query batch stops the run. A failed record
 // fetch, delta download or signal refresh is logged and the run continues
@@ -127,7 +130,7 @@ func (s *Service) Run(ctx context.Context, scope model.Scope) (model.Stats, erro
 			return ri.RepoSlug != scope.RepoSlug
 		})
 		if len(inScope) == 0 {
-			return stats, fmt.Errorf("repo %q: %w", scope.RepoSlug, model.ErrNotFound)
+			return stats, s.resolveRepoWithoutIntervals(ctx, scope.RepoSlug, now, stats)
 		}
 	}
 	stats["intervals"] = int64(len(inScope))
@@ -249,11 +252,11 @@ type ecoDelta struct {
 func cursorKey(ecosystem string) string { return "osv.modified." + ecosystem }
 
 // readDeltas reads the delta of every ecosystem in use. An ecosystem with no
-// cursor gets one at the earlier of its newest record and runStart, the time
-// taken before the query batch, and contributes no refs; the others return
-// the refs modified since their cursor. A failed download is returned in the
-// collected errors and leaves that ecosystem's cursor alone; a store failure
-// stops the run.
+// cursor gets runStart, the time taken before the query batch, as its cursor
+// without its delta being downloaded, and contributes no refs; the others
+// return the refs modified since their cursor. A failed download is returned
+// in the collected errors and leaves that ecosystem's cursor alone; a store
+// failure stops the run.
 func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, runStart time.Time, stats model.Stats) ([]ecoDelta, []error, error) {
 	var (
 		deltas    []ecoDelta
@@ -264,16 +267,23 @@ func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, runS
 			return nil, nil, err
 		}
 		key := cursorKey(eco)
-		var cursor time.Time
 		raw, err := s.kv.GetKV(ctx, key)
-		switch {
-		case errors.Is(err, model.ErrNotFound):
-		case err != nil:
-			return nil, nil, fmt.Errorf("read %s delta cursor: %w", eco, err)
-		default:
-			if cursor, err = time.Parse(time.RFC3339, raw); err != nil {
-				return nil, nil, fmt.Errorf("read %s delta cursor: %w", eco, err)
+		if errors.Is(err, model.ErrNotFound) {
+			// The query batch covers every record that existed when the run
+			// started, so the first cursor is the run's start and the delta
+			// is not read: whatever it holds now, a record modified later is
+			// in the next run's delta.
+			if err := s.kv.SetKV(ctx, key, runStart.Format(kvTimeLayout)); err != nil {
+				return nil, nil, fmt.Errorf("store %s delta cursor: %w", eco, err)
 			}
+			continue
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s delta cursor: %w", eco, err)
+		}
+		cursor, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s delta cursor: %w", eco, err)
 		}
 		refs, err := s.src.ModifiedSince(ctx, eco, cursor)
 		if err != nil {
@@ -282,23 +292,6 @@ func (s *Service) readDeltas(ctx context.Context, all []model.RepoInterval, runS
 			}
 			s.logger.Warn("vulns delta download failed", "ecosystem", eco, "error", model.Redact(err.Error()))
 			collected = append(collected, fmt.Errorf("read %s delta: %w", eco, err))
-			continue
-		}
-		if cursor.IsZero() {
-			// The query batch covers every record that existed when the run
-			// started, so the first cursor is the newest record and none is
-			// fetched. A record modified after the run started may have
-			// missed the query batch, so the cursor goes no later than the
-			// start and the next delta reads it.
-			if newest, ok := newestModified(refs); ok {
-				first := newest.UTC()
-				if runStart.Before(first) {
-					first = runStart
-				}
-				if err := s.kv.SetKV(ctx, key, first.Format(kvTimeLayout)); err != nil {
-					return nil, nil, fmt.Errorf("store %s delta cursor: %w", eco, err)
-				}
-			}
 			continue
 		}
 		stats["delta_refs"] += int64(len(refs))
@@ -653,6 +646,32 @@ func (s *Service) writeFindings(ctx context.Context, scope model.Scope, inScope 
 	return nil
 }
 
+// resolveRepoWithoutIntervals handles a scoped run whose repo has no stored
+// interval: it resolves every unresolved advisory finding of that repo, found
+// by its fingerprint prefix. With no such finding either, the repo is unknown
+// and the error wraps model.ErrNotFound.
+func (s *Service) resolveRepoWithoutIntervals(ctx context.Context, slug string, now time.Time, stats model.Stats) error {
+	unresolved, err := s.findings.ListUnresolvedFindings(ctx, model.KindAdvisory)
+	if err != nil {
+		return fmt.Errorf("list unresolved advisory findings: %w", err)
+	}
+	prefix := findingKey{repoSlug: slug}.fingerprintPrefix()
+	unresolved = slices.DeleteFunc(unresolved, func(f model.Finding) bool { return !strings.HasPrefix(f.Fingerprint, prefix) })
+	if len(unresolved) == 0 {
+		return fmt.Errorf("repo %q: %w", slug, model.ErrNotFound)
+	}
+	for _, f := range unresolved {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.findings.ResolveFinding(ctx, f.Fingerprint, now); err != nil {
+			return fmt.Errorf("resolve advisory finding: %w", err)
+		}
+		stats["findings_resolved"]++
+	}
+	return nil
+}
+
 // findingKey groups the matches of one finding.
 type findingKey struct {
 	repoSlug   string
@@ -662,7 +681,13 @@ type findingKey struct {
 
 // fingerprint returns the finding fingerprint of k.
 func (k findingKey) fingerprint() string {
-	return "advisory|" + k.repoSlug + "|" + k.purl + "|" + k.advisoryID
+	return k.fingerprintPrefix() + k.purl + "|" + k.advisoryID
+}
+
+// fingerprintPrefix returns the start every finding fingerprint of k's repo
+// shares.
+func (k findingKey) fingerprintPrefix() string {
+	return "advisory|" + k.repoSlug + "|"
 }
 
 // buildFindings returns one advisory finding per repo, package and advisory

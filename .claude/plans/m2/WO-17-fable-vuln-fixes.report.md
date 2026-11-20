@@ -107,3 +107,75 @@ Outside scope:
 
 Concerns: none
 Question or blocker: none
+
+## Fix round 1
+
+Status: DONE
+Work order: .claude/plans/m2/WO-17-fable-vuln-fixes.md (rulings WO17-R2, WO17-R1), on top of ef18dcc
+Files changed:
+- internal/vuln/service.go (modified)
+- internal/vuln/service_test.go (modified)
+- internal/vuln/service_extra_test.go (modified)
+- internal/vuln/integration_test.go (modified)
+- internal/vuln/pypi_e2e_test.go (modified)
+
+Commands run:
+- `make check` -> exit 0
+  ```
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/upstream/depsdev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.479s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	(cached)
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/web	(cached)
+  ==> arch-lint
+  go run github.com/fe3dback/go-arch-lint@v1.19.2 check --output-color=false
+  module: github.com/Amrit-Code/upstreamwatch
+  linters:
+     On | Base: component imports # always on
+     On | Advanced: vendor imports # switch 'allow.depOnAnyVendor = false' (or delete) to on
+    Off | Advanced: method calls and dependency injections # switch 'allow.deepScan = true' (or delete) to on
+
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+  ```
+- `go test -race -count=1 ./internal/model/ ./internal/extract/... ./internal/timeline/ ./internal/vuln/...` -> exit 0
+  ```
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/model	1.191s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/extract	1.303s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/extract/unity	1.194s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/timeline	3.109s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln	1.343s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/epss	1.211s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/kev	1.432s
+  ok  	github.com/Amrit-Code/upstreamwatch/internal/vuln/osv	1.534s
+  ```
+- `git status --porcelain` -> exit 0
+  ```
+   M internal/vuln/integration_test.go
+   M internal/vuln/pypi_e2e_test.go
+   M internal/vuln/service.go
+   M internal/vuln/service_extra_test.go
+   M internal/vuln/service_test.go
+  ```
+  (plus this report file once this section is appended)
+- Revert checks (temporary edits, restored before the runs above):
+  - WO17-R2: restored the round-0 first-cursor logic (download the CSV, cursor = earlier of newest line and run start, nothing stored on an empty CSV or a failed download): `TestRun_FirstCursorAtRunStartWhenDeltaWouldFail` FAIL (`first Run() error = modified_id.csv: status 503, want nil`), `TestRun_FirstCursorAtRunStartWithEmptyDelta` FAIL (`kv[osv.modified.Go] = "" after the first run, want "2026-04-02T00:10:00Z"`).
+  - WO17-R1: restored the early `ErrNotFound` return: `TestRun_ScopeOneRepo/repo_without_intervals` FAIL (`Run(example-admin) error = repo "example-admin": not found, want nil`).
+
+Changes:
+- WO17-R2: `readDeltas` with no stored cursor now stores the run start (`now`, taken before `queryNew`) and `continue`s without calling `ModifiedSince` for that ecosystem on that run. The round-0 "earlier of newest line and run start" code is gone.
+- WO17-R1: a scoped run whose slug has no stored interval calls the new `resolveRepoWithoutIntervals`: it lists unresolved advisory findings, keeps those whose fingerprint starts with `advisory|<slug>|` (new `findingKey.fingerprintPrefix`, also used by `fingerprint`), resolves them at `now` (counted in `findings_resolved`) and returns nil; with none it returns `repo "<slug>": ... model.ErrNotFound` as before. The Run doc comment says so.
+- Tests: new two-run regressions `TestRun_FirstCursorAtRunStartWithEmptyDelta` and `TestRun_FirstCursorAtRunStartWhenDeltaWouldFail` (shared helper `checkPublishedBetweenRunsFetched`: an advisory published between runs is fetched by run 2's delta from the run-1 start, raises its finding, no re-query); new subtest `TestRun_ScopeOneRepo/repo without intervals` (resolves both admin findings, leaves the server finding and an `example-admin-old` finding unresolved, then a second scoped run returns ErrNotFound). `TestRun_FirstCursorNotSetFromEmptyDelta` (old semantics) was replaced by the empty-CSV regression.
+- Existing tests updated for the new first-run cursor (run start, no first-run download): `TestRun_FirstRun`, `TestRun_FetchErrorsCollected` (PyPI now has a run-1 cursor that a failed download leaves unchanged), `TestRun_EcosystemsSortedWithExtras` (checks the three cursors after run 1, then the sorted downloads on run 2), `TestRun_FindingStableAcrossRuns` (cursor = first run's start). `TestRun_SecondRunDelta` and `TestRun_FetchSetKeepsNewestModified` set the Go cursor to at(0) in the fake kv before run 2, keeping their original scenarios (a delta line at the stored time, and a delta line older than the run start). `TestPyPIDottedNameMatches` lost its now-unused bucket route; `BucketURL` still points at the fake server, so a stray bucket request fails the test instead of reaching the network.
+
+Decisions:
+- WO17-R1: the slug-without-intervals path returns straight after resolving, without querying, reading deltas, refreshing signals or replacing matches, mirroring the early return it replaces and the ruling's "resolves ... and returns nil". The repo's matches need no replacement: they cascade with its deleted `dep_versions` rows (`advisory_matches.dep_version_id ... ON DELETE CASCADE`).
+- `findings_resolved` counts these resolutions; `intervals` stays 0.
+
+Outside scope:
+- docs-sync rows in addition to round 0: the vulns job's first delta cursor is the run start with no CSV download on that run; a scoped `upw run vulns --repo <slug>` for a repo with no intervals resolves its advisory findings and only errors when it has none.
+
+Concerns: none
+Question or blocker: none

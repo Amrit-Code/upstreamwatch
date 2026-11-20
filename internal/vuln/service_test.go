@@ -213,12 +213,11 @@ func TestRun_FirstRun(t *testing.T) {
 		}
 	}
 
-	wantMod := []modCall{{ecosystem: "Go"}}
-	if !reflect.DeepEqual(h.src.modCalls, wantMod) {
-		t.Errorf("ModifiedSince calls = %v, want %v", h.src.modCalls, wantMod)
+	if len(h.src.modCalls) != 0 {
+		t.Errorf("ModifiedSince calls = %v, want none (no cursor yet)", h.src.modCalls)
 	}
-	if got, want := h.store.kv[cursorKV], "2026-04-01T00:00:00Z"; got != want {
-		t.Errorf("kv[%s] = %q, want %q (newest delta line)", cursorKV, got, want)
+	if got, want := h.store.kv[cursorKV], "2026-04-02T00:10:00Z"; got != want {
+		t.Errorf("kv[%s] = %q, want %q (the run's start)", cursorKV, got, want)
 	}
 	wantFetch := []string{advLib, advTool, advLibB}
 	if !reflect.DeepEqual(h.src.fetchCalls, wantFetch) {
@@ -295,6 +294,9 @@ func TestRun_SecondRunDelta(t *testing.T) {
 	h := newHarness(t, nil, nil, vuln.Options{})
 	h.run(t, model.Scope{})
 	h.src.resetCalls()
+	// The cursor is at(0), as an earlier run left it, so the delta reaches
+	// back before advLibB's stored time.
+	h.store.kv[cursorKV] = at(0).Format(time.RFC3339)
 
 	changed := h.src.records[advLib]
 	changed.Modified = at(48)
@@ -503,6 +505,49 @@ func TestRun_ScopeOneRepo(t *testing.T) {
 		checkStats(t, stats, map[string]int64{"intervals": 4, "unversioned": 0, "pairs_new": 1})
 	})
 
+	t.Run("repo without intervals", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, nil, nil, vuln.Options{})
+		h.run(t, model.Scope{})
+		h.src.resetCalls()
+		h.store.resetCalls()
+		// Every interval of the admin repo vanishes. A repo whose slug only
+		// starts with the admin slug keeps its finding.
+		h.store.intervals = slices.DeleteFunc(slices.Clone(h.store.intervals), func(ri model.RepoInterval) bool {
+			return ri.RepoID == adminID
+		})
+		const longerSlug = adminSlug + "-old"
+		if _, err := h.store.UpsertFinding(t.Context(), model.Finding{
+			Kind: model.KindAdvisory, RepoID: 3, AdvisoryID: advLib,
+			Fingerprint: fingerprint(longerSlug, libPURL, advLib), LastChangedAt: runAt,
+		}); err != nil {
+			t.Fatalf("UpsertFinding() error = %v", err)
+		}
+		h.store.resetCalls()
+		h.now = runAt.Add(6 * time.Hour)
+
+		stats, err := h.svc.Run(t.Context(), model.Scope{RepoSlug: adminSlug})
+		if err != nil {
+			t.Fatalf("Run(%s) error = %v, want nil", adminSlug, err)
+		}
+		wantResolved := []string{fingerprint(adminSlug, libPURL, advLib), fingerprint(adminSlug, libPURL, advLibB)}
+		slices.Sort(h.store.resolved)
+		if !reflect.DeepEqual(h.store.resolved, wantResolved) {
+			t.Errorf("resolved = %v, want %v (the admin findings only)", h.store.resolved, wantResolved)
+		}
+		for _, fp := range []string{fingerprint(serverSlug, libPURL, advLib), fingerprint(longerSlug, libPURL, advLib)} {
+			if f, ok := h.store.finding(fp); !ok || !f.ResolvedAt.IsZero() {
+				t.Errorf("finding %s = %+v, want it left unresolved", fp, f)
+			}
+		}
+		checkStats(t, stats, map[string]int64{"intervals": 0, "findings_resolved": 2})
+
+		// With its findings resolved, the slug is unknown.
+		if _, err := h.svc.Run(t.Context(), model.Scope{RepoSlug: adminSlug}); !errors.Is(err, model.ErrNotFound) {
+			t.Errorf("second Run(%s) error = %v, want it to wrap model.ErrNotFound", adminSlug, err)
+		}
+	})
+
 	t.Run("unknown slug", func(t *testing.T) {
 		t.Parallel()
 		h := newHarness(t, nil, nil, vuln.Options{})
@@ -546,16 +591,16 @@ func TestRun_FetchErrorsCollected(t *testing.T) {
 	if !strings.Contains(err.Error(), "PyPI") {
 		t.Errorf("Run() error %q does not name the failed PyPI delta", err)
 	}
-	if got := h.store.kv[cursorKV]; got != "2026-04-01T00:00:00Z" {
+	if got := h.store.kv[cursorKV]; got != "2026-04-02T00:10:00Z" {
 		t.Errorf("kv[%s] = %q, want it unchanged after a failed fetch", cursorKV, got)
 	}
-	if _, ok := h.store.kv["osv.modified.PyPI"]; ok {
-		t.Errorf("PyPI cursor stored after a failed delta download")
+	if got := h.store.kv["osv.modified.PyPI"]; got != "2026-04-02T00:10:00Z" {
+		t.Errorf("kv[osv.modified.PyPI] = %q, want it unchanged after a failed delta download", got)
 	}
 	if _, ok := h.store.advisories["GO-2026-0200"]; ok {
 		t.Errorf("irrelevant delta record saved")
 	}
-	if want := []modCall{{ecosystem: "Go", since: at(0)}, {ecosystem: "PyPI"}}; !reflect.DeepEqual(h.src.modCalls, want) {
+	if want := []modCall{{ecosystem: "Go", since: runAt}, {ecosystem: "PyPI", since: runAt}}; !reflect.DeepEqual(h.src.modCalls, want) {
 		t.Errorf("ModifiedSince calls = %v, want %v", h.src.modCalls, want)
 	}
 	checkStats(t, stats, map[string]int64{
@@ -703,8 +748,8 @@ func TestRun_DeltaCorrectionDropsPackage(t *testing.T) {
 func TestRun_FirstCursorNotAfterRunStart(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil, nil, vuln.Options{})
-	// GO-2026-0400 was published after the run started, between the query
-	// batch and the modified_id.csv download, so the query batch missed it.
+	// GO-2026-0400 was published after the run started, so the query batch
+	// may have missed it, and it is already in the modified list.
 	const late = "GO-2026-0400"
 	h.src.records[late] = goRecord(late, libPURL, "1.2.5", model.SeverityHigh, runAt, runAt.Add(5*time.Minute))
 	h.src.prepend("Go", model.AdvisoryRef{ID: late, Modified: runAt.Add(5 * time.Minute)})

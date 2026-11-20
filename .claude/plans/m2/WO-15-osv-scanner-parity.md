@@ -68,3 +68,4 @@ Write the full report to the report file named at the top, in the form given in 
 ## Rulings
 
 - 2026-11-19 (lead): on the Mac osv-scanner 2.7.1 is installed at `$HOME/go/bin/osv-scanner` (built with `CGO_ENABLED=0`; the cgo build fails to link). Look it up with `exec.LookPath("osv-scanner")` first, then `$(go env GOPATH)/bin/osv-scanner`; skip only when neither exists.
+- 2026-11-20 (lead), on the glow difference: option (a). osv-scanner v2.7.1 does not scan the go.mod Go version by default; run it with a config file (in `cmd/upw/testdata/advisory_parity/`) that sets `ScanGoModVersion = true`, so both sides compare the same packages. No exceptions. Keep `GOFLAGS=-modcacherw` in its environment.

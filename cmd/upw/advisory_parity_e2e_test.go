@@ -303,6 +303,12 @@ func TestAdvisoryParity(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := compareAdvisories(fx.slug, file, byPath[file], theirs, advisoryParityExceptions)
+			// Both fixtures have known open advisories at their pins, so an
+			// empty side means a source outage or a stale pin, not parity.
+			if len(r.ours) == 0 || len(r.theirs) == 0 {
+				t.Errorf("no advisory ids to compare on %s: upw %d, osv-scanner %d, want at least one on each side (OSV unreachable, or the fixture pin no longer has open advisories)\n%s",
+					file, len(r.ours), len(r.theirs), r.report())
+			}
 			if !r.ok() {
 				t.Errorf("open advisory matches differ from osv-scanner\n%s", r.report())
 			} else {

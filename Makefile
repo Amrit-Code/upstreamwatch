@@ -26,9 +26,10 @@ check:
 	@echo "==> import-check"
 	sh scripts/check-imports.sh
 
-# e2e compares the timelines of two public fixture repositories with
-# git pkgs history. It needs the network and git-pkgs on PATH, so check leaves
-# it out.
+# e2e runs both referee tests on two public fixture repositories: the
+# timelines against git pkgs history, and the open advisory matches at HEAD
+# against osv-scanner. It needs the network, git-pkgs on PATH and osv-scanner
+# (on PATH or in GOPATH/bin), so check leaves it out.
 e2e:
 	go test -tags e2e -race -count=1 -run 'TestParity|TestAdvisoryParity' -v -timeout 20m ./cmd/upw/
 

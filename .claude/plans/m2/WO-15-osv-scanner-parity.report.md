@@ -135,3 +135,32 @@ Outside scope:
 - The Makefile comment above `e2e` is unchanged (see the original report).
 - docs-sync may want to record the `ScanGoModVersion` ruling under "Lead decisions for M2" and in PLAN.md 5.4's differential-test line.
 Concerns: none
+
+## Fix round 2
+
+Status: DONE
+Work order: .claude/plans/m2/WO-15-osv-scanner-parity.md (review findings 1 and 2, applied on top of d523935)
+Files changed:
+- cmd/upw/advisory_parity_e2e_test.go (modified)
+  - After the comparison, the subtest now fails when either side has no advisory ids for the compared file.
+  - The failure message gives both counts, names the likely causes (OSV unreachable, or the fixture pin no longer has open advisories) and prints the full report.
+- Makefile (modified)
+  - The comment above `e2e` now says the target runs both referees: timelines against git pkgs history, and open advisory matches at HEAD against osv-scanner.
+  - It also says the target needs the network, git-pkgs on PATH and osv-scanner on PATH or in GOPATH/bin.
+Commands run:
+- `go vet -tags e2e ./cmd/upw/` -> exit 0 (no output)
+- `go test -tags e2e -race -count=1 -run 'TestAdvisoryParityCompare|TestAdvisoryParityDecode|TestAdvisoryParityOpenIDs' ./cmd/upw/` -> exit 0
+  ok  	github.com/Amrit-Code/upstreamwatch/cmd/upw	1.378s
+- `make check` -> exit 0
+  ==> arch-lint
+  OK - No warnings found
+  ==> import-check
+  sh scripts/check-imports.sh
+- I did not rerun the networked TestAdvisoryParity, as the lead allowed. In fix round 1 it found 18 ids per side for glow and 34 for cleo, so the new guard would not have fired on that run.
+- `git status --porcelain`:
+   M Makefile
+   M cmd/upw/advisory_parity_e2e_test.go
+  (the report file is also modified once this section is appended)
+Decisions: the guard reports with `t.Errorf` rather than `t.Fatalf`, so the comparison report with both sets is still printed on the same run.
+Outside scope: none
+Concerns: none
